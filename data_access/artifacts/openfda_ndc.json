@@ -1,0 +1,232 @@
+{
+  "meta": {
+    "disclaimer": "Do not rely on openFDA to make decisions regarding medical care. While we make every effort to ensure that data is accurate, you should assume all results are unvalidated. We may limit or otherwise restrict your access to the API in line with our Terms of Service.",
+    "terms": "https://open.fda.gov/terms/",
+    "license": "https://open.fda.gov/license/",
+    "last_updated": "2026-04-22",
+    "results": {
+      "skip": 0,
+      "limit": 3,
+      "total": 134493
+    }
+  },
+  "results": [
+    {
+      "product_ndc": "76420-846",
+      "generic_name": "Ibuprofen",
+      "labeler_name": "Asclemed USA, Inc.",
+      "brand_name": "Ibuprofen",
+      "active_ingredients": [
+        {
+          "name": "IBUPROFEN",
+          "strength": "400 mg/1"
+        }
+      ],
+      "finished": true,
+      "packaging": [
+        {
+          "package_ndc": "76420-846-01",
+          "description": "100 TABLET, FILM COATED in 1 BOTTLE (76420-846-01)",
+          "marketing_start_date": "20240908",
+          "sample": false
+        },
+        {
+          "package_ndc": "76420-846-05",
+          "description": "500 TABLET, FILM COATED in 1 BOTTLE (76420-846-05)",
+          "marketing_start_date": "20240908",
+          "sample": false
+        },
+        {
+          "package_ndc": "76420-846-30",
+          "description": "30 TABLET, FILM COATED in 1 BOTTLE (76420-846-30)",
+          "marketing_start_date": "20240908",
+          "sample": false
+        },
+        {
+          "package_ndc": "76420-846-60",
+          "description": "60 TABLET, FILM COATED in 1 BOTTLE (76420-846-60)",
+          "marketing_start_date": "20240908",
+          "sample": false
+        },
+        {
+          "package_ndc": "76420-846-90",
+          "description": "90 TABLET, FILM COATED in 1 BOTTLE (76420-846-90)",
+          "marketing_start_date": "20240908",
+          "sample": false
+        }
+      ],
+      "listing_expiration_date": "20261231",
+      "openfda": {
+        "manufacturer_name": [
+          "Asclemed USA, Inc."
+        ],
+        "rxcui": [
+          "197805",
+          "197806",
+          "197807"
+        ],
+        "spl_set_id": [
+          "ca81671d-1ea8-4c67-802f-adb3a2f087cc"
+        ],
+        "nui": [
+          "N0000000160",
+          "M0001335",
+          "N0000175722"
+        ],
+        "pharm_class_moa": [
+          "Cyclooxygenase Inhibitors [MoA]"
+        ],
+        "pharm_class_cs": [
+          "Anti-Inflammatory Agents, Non-Steroidal [CS]"
+        ],
+        "pharm_class_epc": [
+          "Nonsteroidal Anti-inflammatory Drug [EPC]"
+        ],
+        "unii": [
+          "WK2XYI10QM"
+        ]
+      },
+      "marketing_category": "ANDA",
+      "dosage_form": "TABLET, FILM COATED",
+      "spl_id": "2195e546-9f39-0130-e063-6294a90ad9c3",
+      "product_type": "HUMAN PRESCRIPTION DRUG",
+      "route": [
+        "ORAL"
+      ],
+      "marketing_start_date": "20240523",
+      "product_id": "76420-846_2195e546-9f39-0130-e063-6294a90ad9c3",
+      "application_number": "ANDA202413",
+      "brand_name_base": "Ibuprofen",
+      "pharm_class": [
+        "Anti-Inflammatory Agents",
+        "Non-Steroidal [CS]",
+        "Cyclooxygenase Inhibitors [MoA]",
+        "Nonsteroidal Anti-inflammatory Drug [EPC]"
+      ]
+    },
+    {
+      "product_ndc": "76472-4076",
+      "generic_name": "COCCULUS INDICUS",
+      "labeler_name": "SEVENE USA",
+      "brand_name": "COCCULUS INDICUS 200CK",
+      "brand_name_suffix": "200CK",
+      "active_ingredients": [
+        {
+          "name": "ANAMIRTA COCCULUS SEED",
+          "strength": "200 [hp_C]/1"
+        }
+      ],
+      "finished": true,
+      "packaging": [
+        {
+          "package_ndc": "76472-4076-1",
+          "description": "80 PELLET in 1 CYLINDER (76472-4076-1)",
+          "marketing_start_date": "20220708",
+          "sample": false
+        }
+      ],
+      "listing_expiration_date": "20261231",
+      "openfda": {
+        "manufacturer_name": [
+          "SEVENE USA"
+        ],
+        "spl_set_id": [
+          "ed9c7d19-3186-beb8-e053-2995a90a7481"
+        ],
+        "is_original_packager": [
+          true
+        ],
+        "upc": [
+          "0810095312755"
+        ],
+        "unii": [
+          "810258W28U"
+        ]
+      },
+      "marketing_category": "UNAPPROVED HOMEOPATHIC",
+      "dosage_form": "PELLET",
+      "spl_id": "2ddc3aac-ab41-ef41-e063-6394a90a04d6",
+      "product_type": "HUMAN OTC DRUG",
+      "route": [
+        "SUBLINGUAL"
+      ],
+      "marketing_start_date": "20220708",
+      "product_id": "76472-4076_2ddc3aac-ab41-ef41-e063-6394a90a04d6",
+      "brand_name_base": "COCCULUS INDICUS"
+    },
+    {
+      "product_ndc": "77771-121",
+      "generic_name": "Clopidogrel bisulfate",
+      "labeler_name": "RADHA PHARMACEUTICALS, INC.",
+      "brand_name": "Clopidogrel bisulfate",
+      "active_ingredients": [
+        {
+          "name": "CLOPIDOGREL BISULFATE",
+          "strength": "300 mg/1"
+        }
+      ],
+      "finished": true,
+      "packaging": [
+        {
+          "package_ndc": "77771-121-05",
+          "description": "500 TABLET, FILM COATED in 1 BOTTLE (77771-121-05)",
+          "marketing_start_date": "20230220",
+          "sample": false
+        },
+        {
+          "package_ndc": "77771-121-30",
+          "description": "30 TABLET, FILM COATED in 1 BOTTLE (77771-121-30)",
+          "marketing_start_date": "20230220",
+          "sample": false
+        },
+        {
+          "package_ndc": "77771-121-90",
+          "description": "90 TABLET, FILM COATED in 1 BOTTLE (77771-121-90)",
+          "marketing_start_date": "20230220",
+          "sample": false
+        }
+      ],
+      "listing_expiration_date": "20261231",
+      "openfda": {
+        "manufacturer_name": [
+          "RADHA PHARMACEUTICALS, INC."
+        ],
+        "rxcui": [
+          "309362",
+          "749196"
+        ],
+        "spl_set_id": [
+          "16aef4f6-6b90-4d5f-9e07-c9927adf3841"
+        ],
+        "is_original_packager": [
+          true
+        ],
+        "upc": [
+          "0377771124908",
+          "0377771124106",
+          "0377771124304"
+        ],
+        "unii": [
+          "08I79HTP27"
+        ]
+      },
+      "marketing_category": "ANDA",
+      "dosage_form": "TABLET, FILM COATED",
+      "spl_id": "09ac9273-240e-b149-e063-6394a90a20cb",
+      "product_type": "HUMAN PRESCRIPTION DRUG",
+      "route": [
+        "ORAL"
+      ],
+      "marketing_start_date": "20230220",
+      "product_id": "77771-121_09ac9273-240e-b149-e063-6394a90a20cb",
+      "application_number": "ANDA204165",
+      "brand_name_base": "Clopidogrel bisulfate",
+      "pharm_class": [
+        "Cytochrome P450 2C8 Inhibitors [MoA]",
+        "Decreased Platelet Aggregation [PE]",
+        "P2Y12 Platelet Inhibitor [EPC]",
+        "P2Y12 Receptor Antagonists [MoA]"
+      ]
+    }
+  ]
+}
