@@ -1,28 +1,24 @@
 import { Router, Request, Response } from 'express';
 import { AIMessageChunk, ToolMessage } from '@langchain/core/messages';
+import type { StreamEvent } from '@langchain/core/tracers/log_stream';
 import { getInvestigationAgent } from '../services/agents';
 
 const router = Router();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/investigate  —  SSE stream of the deep agent graph running.
+// POST /api/investigate  —  SSE stream of the deep agent graph.
 //
-// Body: { drug: string, scenarioParams?: string }
-//
-// SSE events (all carry `source`: "main" | "sub"):
+// Uses agent.streamEvents (v2) with subgraphs:true.
+// Events:
 //   event: start          { drug }
-//   event: step           { source, node }           graph node just ran
-//   event: token          { source, text }            LLM token (native streaming)
-//   event: tool_call      { source, name, args }      agent invoking a tool
-//   event: tool_result    { source, name, preview }   tool output @120 chars
-//   event: agent_response { source, preview }         agent text reply @200 chars
-//   event: graph_data     { drug, graph }             force-graph JSON payload
+//   event: step           { source, node }
+//   event: token          { source, text }
+//   event: tool_call      { source, name, args }
+//   event: tool_result    { source, name, preview }
+//   event: agent_response { source, preview }
+//   event: graph_data     { drug, graph }
 //   event: done           { durationMs }
 //   event: error          { message }
-//
-// Implementation: uses agent.stream() with streamMode:["updates","messages"]
-// and subgraphs:true. This is a 3-TUPLE [namespace, mode, data] per chunk.
-// Single mode + subgraphs would be 2-tuple — keep the array to get 3-tuple.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TOOL_PREVIEW = 120;
@@ -34,81 +30,31 @@ interface InvestigateBody {
 }
 
 function sse(res: Response, event: string, data: unknown): void {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 function cap(v: unknown, n: number): string {
-  const s =
-    v == null
-      ? ''
-      : typeof v === 'string'
-        ? v
-        : (() => {
-            try {
-              return JSON.stringify(v);
-            } catch {
-              return String(v);
-            }
-          })();
+  const s = v == null ? '' : typeof v === 'string' ? v : (() => { try { return JSON.stringify(v); } catch { return String(v); } })();
   return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
-/** Determine source label from namespace: empty = main agent, contains tools: = subagent. */
-function source(namespace: string[]): string {
-  return namespace.length === 0 ? 'main' : 'sub';
-}
-
-/** Unwrap TUB/prompt-based JSON wrapper {"type":"final","content":"..."}.
- *  Also works for native-tool models that return plain text. */
 function extractText(content: unknown): string {
-  let raw =
-    typeof content === 'string'
-      ? content
-      : Array.isArray(content)
-        ? content
-            .map((p) =>
-              typeof p === 'string'
-                ? p
-                : p && typeof p === 'object' && 'text' in p
-                  ? String((p as { text: unknown }).text)
-                  : '',
-            )
-            .join('')
-        : content != null
-          ? (() => {
-              try {
-                return JSON.stringify(content);
-              } catch {
-                return '';
-              }
-            })()
-          : '';
+  let raw = typeof content === 'string' ? content
+    : Array.isArray(content) ? content.map((p) => typeof p === 'string' ? p : (p && typeof p === 'object' && 'text' in p ? String((p as {text:unknown}).text) : '')).join('')
+    : content != null ? (() => { try { return JSON.stringify(content); } catch { return ''; } })() : '';
   raw = raw.trim();
-  if (raw.startsWith('```')) {
-    raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-  }
+  if (raw.startsWith('```')) raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   try {
     const p = JSON.parse(raw);
-    if (p && typeof p === 'object') {
-      if (p.type === 'final' && typeof p.content === 'string') return p.content;
-      if (p.type === 'tool_call') return ''; // handled by tool_call event
-    }
-  } catch {
-    /* plain text */
-  }
+    if (p?.type === 'final' && typeof p.content === 'string') return p.content;
+    if (p?.type === 'tool_call') return '';
+  } catch { /* plain text */ }
   return raw;
 }
 
 function buildPrompt(drug: string, scenarioParams?: string): string {
-  let p = `Investigate the drug shortage situation for: ${drug}.\n\n`;
-  p +=
-    'Follow the full investigation process: resolve the drug, find root causes ranked with ' +
-    'evidence and source URLs, delegate risk propagation and mitigation planning to the ' +
-    'appropriate subagents, and produce a final structured report.';
-  if (scenarioParams) {
-    p += `\n\nAlso address this what-if scenario using the scenario_analyst subagent: ${scenarioParams}`;
-  }
+  let p = `Investigate the drug shortage situation for: ${drug}.\n\nFollow the full investigation process: resolve the drug, find root causes ranked with evidence and source URLs, delegate risk propagation and mitigation planning to the appropriate subagents, and produce a final structured report.`;
+  if (scenarioParams) p += `\n\nAlso address this what-if: ${scenarioParams}`;
   return p;
 }
 
@@ -120,15 +66,13 @@ router.post('/', async (req: Request, res: Response) => {
     return;
   }
 
-  // SSE headers + disable Nagle so small writes flush to client immediately.
-  // Without setNoDelay, Node's HTTP response buffers small chunks (< ~16KB)
-  // which can stall SSE streams until a later larger write arrives.
+  // SSE setup
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
-  try { (res.socket as { setNoDelay?: (b: boolean) => void } | null)?.setNoDelay?.(true); } catch { /* noop */ }
+  try { (res.socket as unknown as { setNoDelay?: (b: boolean) => void } | null)?.setNoDelay?.(true); } catch { /* noop */ }
 
   const started = Date.now();
   let closed = false;
@@ -136,93 +80,89 @@ router.post('/', async (req: Request, res: Response) => {
 
   sse(res, 'start', { drug });
 
-  // Keepalive comment every 10s so the client knows the connection is alive
-  // even during long LLM calls. SSE clients ignore comment lines (":...").
+  // Keepalive so long LLM calls don't look like a dead connection
   const heartbeat = setInterval(() => {
-    if (closed) return;
-    try { res.write(': keepalive\n\n'); } catch { /* noop */ }
+    if (!closed) try { res.write(': keepalive\n\n'); } catch { /* noop */ }
   }, 10_000);
 
   let agent;
   try {
     agent = getInvestigationAgent();
   } catch (err) {
+    clearInterval(heartbeat);
     sse(res, 'error', { message: (err as Error).message });
     res.end();
     return;
   }
 
   try {
-    // streamMode array → 3-tuple [namespace, mode, data] per chunk.
-    // subgraphs:true surfaces events from subagent subgraphs with non-empty namespace.
-    const stream = await agent.stream(
+    const eventStream = agent.streamEvents(
       { messages: [{ role: 'user', content: buildPrompt(drug.trim(), scenarioParams?.trim()) }] },
-      { streamMode: ['updates', 'messages'], subgraphs: true, recursionLimit: 60 },
-    );
+      { version: 'v2', recursionLimit: 60, subgraphs: true } as Record<string, unknown>,
+    ) as AsyncIterable<StreamEvent>;
 
-    for await (const chunk of stream) {
+    for await (const ev of eventStream) {
       if (closed) break;
 
-      // Destructure the 3-tuple: [namespace, mode, data]
-      const [ns, mode, data] = chunk as [string[], string, unknown];
-      const src = source(ns);
+      const kind = ev.event;
+      // Determine source: events from subgraph namespaces have tags with langgraph_checkpoint_ns
+      const ns = (ev.metadata?.langgraph_checkpoint_ns as string | undefined) ?? '';
+      const source = ns.includes('tools:') ? 'sub' : 'main';
 
-      if (mode === 'messages') {
-        const [msg] = data as [unknown, unknown];
-
-        if (msg instanceof AIMessageChunk) {
-          // Tool call chunks (model deciding to call a tool — streams the call)
-          const tcc = msg.tool_call_chunks ?? [];
+      if (kind === 'on_chat_model_stream') {
+        const chunk = ev.data?.chunk;
+        if (chunk instanceof AIMessageChunk) {
+          const tcc = chunk.tool_call_chunks ?? [];
           for (const tc of tcc) {
             if (tc.name) {
               let args: unknown = tc.args;
               try { args = typeof tc.args === 'string' ? JSON.parse(tc.args) : tc.args; } catch { /* raw */ }
-              sse(res, 'tool_call', { source: src, name: tc.name, args });
+              sse(res, 'tool_call', { source, name: tc.name, args });
             }
           }
-
-          // Plain assistant text token — skip if it was a tool call turn
           if (!tcc.length) {
-            const text = extractText(msg.content);
-            if (text) sse(res, 'token', { source: src, text });
+            const text = extractText(chunk.content);
+            if (text) sse(res, 'token', { source, text });
           }
-        } else if (msg instanceof ToolMessage) {
-          // Side-channel: supply chain graph data for UI panel
-          if (msg.name === 'getSupplyChainGraph') {
-            let payload: Record<string, unknown> | null = null;
-            try {
-              payload = typeof msg.content === 'string'
-                ? JSON.parse(msg.content)
-                : (msg.content as unknown as Record<string, unknown>);
-            } catch { payload = null; }
-            const graph = payload?.graph;
-            if (graph && typeof graph === 'object') {
-              sse(res, 'graph_data', { drug: (payload as { drug?: string }).drug ?? drug, graph });
-            }
-          }
-          sse(res, 'tool_result', { source: src, name: msg.name, preview: cap(msg.content, TOOL_PREVIEW) });
         }
-      } else if (mode === 'updates') {
-        // data is { [nodeName]: nodeOutput }
-        const updates = data as Record<string, unknown>;
-        for (const [nodeName, nodeOutput] of Object.entries(updates)) {
-          // Emit step event so UI can see which node just ran
-          sse(res, 'step', { source: src, node: nodeName });
+        continue;
+      }
 
-          // Extract agent's text response from model nodes
-          if (nodeName === 'model_request' || nodeName === 'agent') {
-            const msgs =
-              (nodeOutput as { messages?: unknown[] })?.messages ??
-              (Array.isArray(nodeOutput) ? (nodeOutput as unknown[]) : []);
-            for (const m of msgs) {
-              if (m && typeof m === 'object') {
-                const text = extractText((m as { content?: unknown }).content);
-                if (text.trim()) {
-                  sse(res, 'agent_response', { source: src, preview: cap(text, AGENT_PREVIEW) });
-                }
-              }
-            }
-          }
+      if (kind === 'on_tool_start') {
+        sse(res, 'tool_call', { source, name: ev.name, args: ev.data?.input ?? {} });
+        continue;
+      }
+
+      if (kind === 'on_tool_end') {
+        const output = ev.data?.output;
+        // Side-channel: supply-chain graph for UI panel
+        if (ev.name === 'getSupplyChainGraph' && output) {
+          let payload: Record<string,unknown> | null = null;
+          try { payload = typeof output === 'string' ? JSON.parse(output) : output as Record<string,unknown>; } catch { payload = null; }
+          const graph = payload?.graph;
+          if (graph && typeof graph === 'object') sse(res, 'graph_data', { drug: (payload as {drug?:string}).drug ?? drug, graph });
+        }
+        sse(res, 'tool_result', { source, name: ev.name, preview: cap(ev.data?.output, TOOL_PREVIEW) });
+        continue;
+      }
+
+      // Subagent lifecycle via chain start/end
+      if (kind === 'on_chain_start' && /^(risk_propagator|mitigation_planner|scenario_analyst)$/.test(ev.name ?? '')) {
+        sse(res, 'step', { source: 'sub', node: ev.name, status: 'started' });
+        continue;
+      }
+      if (kind === 'on_chain_end' && /^(risk_propagator|mitigation_planner|scenario_analyst)$/.test(ev.name ?? '')) {
+        sse(res, 'step', { source: 'sub', node: ev.name, status: 'done' });
+        continue;
+      }
+
+      // Final assistant message from model nodes
+      if (kind === 'on_chain_end') {
+        const msgs = (ev.data?.output as { messages?: unknown[] })?.messages ?? [];
+        const last = msgs[msgs.length - 1];
+        if (last && typeof last === 'object') {
+          const text = extractText((last as { content?: unknown }).content);
+          if (text.trim()) sse(res, 'agent_response', { source, preview: cap(text, AGENT_PREVIEW) });
         }
       }
     }
@@ -238,5 +178,3 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 export default router;
-
-// trigger 1777063504
