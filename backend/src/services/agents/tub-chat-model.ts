@@ -87,12 +87,13 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
   }
 
   bindTools(tools: BindToolsInput[], kwargs?: Partial<TubCallOptions>): Runnable {
-    // Inherited Runnable.bind forwards { tools, tool_choice } as default call options,
-    // so _generate reads them from `options.tools`.
-    return (this as unknown as { bind: (x: Record<string, unknown>) => Runnable }).bind({
+    // Runnable.withConfig merges { tools, tool_choice } into default call options,
+    // so _generate() reads them from `options.tools`. (`bind` was renamed to
+    // `withConfig` in recent LangChain.js versions.)
+    return this.withConfig({
       tools,
       ...(kwargs ?? {}),
-    });
+    } as Partial<TubCallOptions>);
   }
 
   async _generate(
@@ -100,7 +101,7 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
     options: this['ParsedCallOptions'],
     runManager?: CallbackManagerForLLMRun,
   ): Promise<ChatResult> {
-    const tools = (options?.tools ?? []) as BindToolsInput[];
+    const tools = Array.isArray(options?.tools) ? (options.tools as BindToolsInput[]) : [];
     const toolChoice = options?.tool_choice;
     const prompt = this.buildPrompt(messages, tools, toolChoice);
 
@@ -145,43 +146,58 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, idx).trim();
-        buffer = buffer.slice(idx + 1);
-        if (!line) continue;
-        let event: Record<string, unknown>;
-        try {
-          event = JSON.parse(line);
-        } catch {
-          continue; // ignore non-JSON keep-alives
-        }
-        const type = event.type;
-        if (type === 'start') {
-          threadId = (event.conversationThread as string | null) ?? null;
-        } else if (type === 'chunk') {
-          const content = String(event.content ?? '');
-          if (content) {
-            text += content;
-            await runManager?.handleLLMNewToken(content);
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          if (!line) continue;
+          let event: Record<string, unknown>;
+          try {
+            event = JSON.parse(line);
+          } catch {
+            continue; // ignore non-JSON keep-alives
           }
-        } else if (type === 'done') {
-          text = String(event.response ?? text);
-          threadId = (event.conversationThread as string | null) ?? threadId;
-          usage = {
-            input_tokens: Number(event.promptTokens) || undefined,
-            output_tokens: Number(event.responseTokens) || undefined,
-            total_tokens: Number(event.totalTokens) || undefined,
-          };
+          const type = event.type;
+          if (type === 'start') {
+            threadId = (event.conversationThread as string | null) ?? null;
+          } else if (type === 'chunk') {
+            const content = String(event.content ?? '');
+            if (content) {
+              text += content;
+              // Callback failures must not abort the response — swallow + log.
+              try {
+                await runManager?.handleLLMNewToken(content);
+              } catch (err) {
+                console.warn('[TubChatModel] token callback error:', (err as Error).message);
+              }
+            }
+          } else if (type === 'done') {
+            text = String(event.response ?? text);
+            threadId = (event.conversationThread as string | null) ?? threadId;
+            usage = {
+              input_tokens: Number(event.promptTokens) || undefined,
+              output_tokens: Number(event.responseTokens) || undefined,
+              total_tokens: Number(event.totalTokens) || undefined,
+            };
+          }
         }
       }
+      // Flush any trailing buffered bytes
+      buffer += decoder.decode();
+    } finally {
+      // Ensure the reader is released even if the loop threw.
+      try {
+        reader.releaseLock();
+      } catch {
+        /* noop */
+      }
     }
-    // Flush any trailing buffered bytes
-    buffer += decoder.decode();
+
     const trailing = buffer.trim();
     if (trailing) {
       try {
@@ -269,20 +285,41 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
     return out;
   }
 
+  /** AIMessage/ToolMessage.content can be a string OR an array of content blocks. */
+  private stringifyContent(content: unknown): string {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((part) => {
+          if (typeof part === 'string') return part;
+          if (part && typeof part === 'object') {
+            const p = part as { text?: unknown; type?: string };
+            if (typeof p.text === 'string') return p.text;
+            return JSON.stringify(part);
+          }
+          return String(part ?? '');
+        })
+        .join('');
+    }
+    if (content == null) return '';
+    return JSON.stringify(content);
+  }
+
   private renderMessage(message: BaseMessage): string {
-    if (message instanceof SystemMessage) return `system: ${String(message.content)}`;
-    if (message instanceof HumanMessage) return `user: ${String(message.content)}`;
+    const content = this.stringifyContent(message.content);
+    if (message instanceof SystemMessage) return `system: ${content}`;
+    if (message instanceof HumanMessage) return `user: ${content}`;
     if (message instanceof ToolMessage) {
-      return `tool[${message.name ?? ''}][${message.tool_call_id}]: ${String(message.content)}`;
+      return `tool[${message.name ?? ''}][${message.tool_call_id}]: ${content}`;
     }
     if (message instanceof AIMessage) {
       const toolCalls = message.tool_calls ?? [];
       if (toolCalls.length) {
         return `assistant_tool_call: ${JSON.stringify(toolCalls)}`;
       }
-      return `assistant: ${String(message.content)}`;
+      return `assistant: ${content}`;
     }
-    return `${message._getType()}: ${String(message.content)}`;
+    return `${message._getType()}: ${content}`;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
