@@ -209,6 +209,23 @@ router.post('/', async (req: Request, res: Response) => {
         continue;
       }
 
+      // Final AI message from the main agent (on_chain_end of the top-level graph).
+      // This carries the investigation summary the model produced.
+      if (kind === 'on_chain_end' && (ev.name === 'LangGraph' || ev.name === '__start__' || ev.name === 'agent')) {
+        const output = ev.data?.output;
+        if (output && typeof output === 'object') {
+          const messages: unknown[] = (output as { messages?: unknown[] }).messages ?? [];
+          const last = messages[messages.length - 1];
+          if (last && typeof last === 'object') {
+            const content = (last as { content?: unknown }).content;
+            if (content && typeof content === 'string' && content.trim()) {
+              writeEvent(res, 'message', { role: 'assistant', content });
+            }
+          }
+        }
+        continue;
+      }
+
       // We leave other events (chat_model_start/end, chain_start/end for main graph) silent
       // to avoid drowning the client. Frontend can re-derive from token/tool_call streams.
     }
