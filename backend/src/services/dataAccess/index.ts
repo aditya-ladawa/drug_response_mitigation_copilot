@@ -4,10 +4,13 @@ import {
   fetchBinarySource,
   fetchCmsCatalog,
   fetchCmsDatasetJson,
+  fetchDailyMedSplsAll,
   fetchGdeltSource,
   fetchHtmlSource,
   fetchImportAlertSearch,
   fetchJsonSource,
+  fetchOpenFdaEnforcementAll,
+  fetchOpenFdaNdcAll,
   fetchZipSource,
 } from './sources';
 
@@ -22,14 +25,7 @@ const SOURCE_CHECKS: SourceCheck[] = [
         'https://www.accessdata.fda.gov/scripts/drugshortages/default.cfm',
       ),
   ],
-  [
-    'openFDA Drug Enforcement',
-    () =>
-      fetchJsonSource(
-        'openFDA Drug Enforcement',
-        'https://api.fda.gov/drug/enforcement.json?limit=3',
-      ),
-  ],
+  ['openFDA Drug Enforcement', () => fetchOpenFdaEnforcementAll('openFDA Drug Enforcement')],
   [
     'FDA Warning Letters Page',
     () =>
@@ -48,18 +44,8 @@ const SOURCE_CHECKS: SourceCheck[] = [
       ),
   ],
   ['FDA Import Alerts', () => fetchImportAlertSearch('FDA Import Alerts')],
-  [
-    'openFDA NDC',
-    () => fetchJsonSource('openFDA NDC', 'https://api.fda.gov/drug/ndc.json?limit=3'),
-  ],
-  [
-    'DailyMed SPLs',
-    () =>
-      fetchJsonSource(
-        'DailyMed SPLs',
-        'https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json?page=1&pagesize=3',
-      ),
-  ],
+  ['openFDA NDC', () => fetchOpenFdaNdcAll('openFDA NDC')],
+  ['DailyMed SPLs', () => fetchDailyMedSplsAll('DailyMed SPLs')],
   [
     'FDA Drug Establishments',
     () =>
@@ -83,7 +69,7 @@ const SOURCE_CHECKS: SourceCheck[] = [
     () =>
       fetchCmsDatasetJson(
         'CMS Medicare Part D',
-        'https://data.cms.gov/data-api/v1/dataset/e54db557-cd82-4e91-a0fe-61aad5865d69/data?size=3',
+        'https://data.cms.gov/data-api/v1/dataset/e54db557-cd82-4e91-a0fe-61aad5865d69/data?size=5000',
       ),
   ],
   [

@@ -12,14 +12,32 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# Artifacts
+# Artifacts & databases
 data_access/artifacts/
 backend/artifacts/
+backend/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Playwright
+playwright-report/
+test-results/
+.playwright/
+
+# Logs
+*.log
+/tmp/
 
 # Environment
 .env
 .env.local
 .env.production
+.env.*.local
 
-# Misc
+# OS / editor
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

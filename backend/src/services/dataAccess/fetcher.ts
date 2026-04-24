@@ -48,6 +48,11 @@ export async function fetchBytes(
   throw lastError!;
 }
 
+export async function fetchJson<T = unknown>(url: string, extraHeaders?: Record<string, string>): Promise<T> {
+  const [buffer] = await fetchBytes(url, { Accept: 'application/json,*/*;q=0.8', ...extraHeaders });
+  return JSON.parse(buffer.toString('utf8')) as T;
+}
+
 export async function fetchBytesPost(
   url: string,
   body: string,
@@ -96,6 +101,15 @@ export function saveArtifact(name: string, suffix: string, payload: Buffer): str
   return `artifacts/${filename}`;
 }
 
+export function readArtifact(name: string, suffix: string): Buffer {
+  const filename = `${safeSlug(name)}${suffix}`;
+  const filePath = path.join(ARTIFACTS_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Artifact not found: ${filePath}`);
+  }
+  return fs.readFileSync(filePath);
+}
+
 export async function fetchProxyList(): Promise<string[]> {
   try {
     const response = await axios.get<string>(
@@ -118,8 +132,6 @@ export async function fetchBytesViaProxy(
   extraHeaders?: Record<string, string>,
 ): Promise<[Buffer, string]> {
   const headers = { ...DEFAULT_HEADERS, ...extraHeaders };
-
-  // Suppress MaxListenersExceeded noise from concurrent socket setup
   const originalMax = process.getMaxListeners();
   process.setMaxListeners(proxies.length + 10);
 
