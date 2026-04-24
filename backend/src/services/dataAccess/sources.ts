@@ -149,31 +149,6 @@ export async function fetchAshpSource(name: string): Promise<SourceResult> {
   }
 }
 
-export async function fetchCmsDatasetJson(name: string, url: string): Promise<SourceResult> {
-  const [payload, contentType] = await fetchBytes(url, { Accept: 'application/json,*/*;q=0.8' });
-  const artifact = saveArtifact(name, '.json', payload);
-  const data: unknown = JSON.parse(payload.toString('utf8'));
-  const rows = Array.isArray(data) ? data.length : 'n/a';
-  return { name, kind: 'json', url, ok: true, summary: `rows=${rows} [${contentType}]`, artifact };
-}
-
-export async function fetchCmsCatalog(name: string, url: string): Promise<SourceResult> {
-  const [payload, contentType] = await fetchBytes(url, { Accept: 'application/json,*/*;q=0.8' });
-  const artifact = saveArtifact(name, '.json', payload);
-  const data: unknown = JSON.parse(payload.toString('utf8'));
-  const datasetCount =
-    typeof data === 'object' && data !== null && Array.isArray((data as Record<string, unknown>)['dataset'])
-      ? ((data as Record<string, unknown>)['dataset'] as unknown[]).length
-      : 'n/a';
-  return {
-    name,
-    kind: 'json',
-    url,
-    ok: true,
-    summary: `datasets=${datasetCount} [${contentType}]`,
-    artifact,
-  };
-}
 
 function buildGdeltUrl(): string {
   const params = new URLSearchParams({

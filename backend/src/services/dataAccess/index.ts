@@ -2,8 +2,6 @@ import { SourceResult } from '../../types';
 import {
   fetchAshpSource,
   fetchBinarySource,
-  fetchCmsCatalog,
-  fetchCmsDatasetJson,
   fetchDailyMedSplsAll,
   fetchGdeltSource,
   fetchHtmlSource,
@@ -64,18 +62,6 @@ const SOURCE_CHECKS: SourceCheck[] = [
   ],
   ['GDELT DOC API', () => fetchGdeltSource('GDELT DOC API')],
   ['ASHP Drug Shortages', () => fetchAshpSource('ASHP Drug Shortages')],
-  [
-    'CMS Medicare Part D',
-    () =>
-      fetchCmsDatasetJson(
-        'CMS Medicare Part D',
-        'https://data.cms.gov/data-api/v1/dataset/e54db557-cd82-4e91-a0fe-61aad5865d69/data?size=5000',
-      ),
-  ],
-  [
-    'CMS Open Payments',
-    () => fetchCmsCatalog('CMS Open Payments', 'https://openpaymentsdata.cms.gov/data.json'),
-  ],
 ];
 
 export async function runChecks(): Promise<SourceResult[]> {
