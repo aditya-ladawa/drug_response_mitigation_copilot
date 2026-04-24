@@ -106,7 +106,7 @@ router.post('/', async (req: Request, res: Response) => {
     dbg('calling streamEvents');
     const eventStream = agent.streamEvents(
       { messages: [{ role: 'user', content: buildPrompt(drug.trim(), scenarioParams?.trim()) }] },
-      { version: 'v2', recursionLimit: 60 } as Record<string, unknown>,
+      { version: 'v2', recursionLimit: 10_000 } as Record<string, unknown>,
     ) as AsyncIterable<StreamEvent>;
     dbg('streamEvents returned, entering for-await');
 
