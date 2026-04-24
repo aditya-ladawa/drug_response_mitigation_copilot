@@ -27,6 +27,34 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
+// Quick SSE smoke-test: streams 5 agent events via streamEvents, no LLM call.
+// Used to verify streamEvents works inside HTTP before investigate runs the full stack.
+app.get('/test-sse', async (_req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  try { (res.socket as unknown as { setNoDelay?: (b: boolean) => void } | null)?.setNoDelay?.(true); } catch { /* noop */ }
+  res.write('event: ping\ndata: {"msg":"starting"}\n\n');
+  const { getInvestigationAgent } = await import('./services/agents');
+  const agent = getInvestigationAgent();
+  let n = 0;
+  try {
+    for await (const ev of agent.streamEvents(
+      { messages: [{ role: 'user', content: 'Say: hi' }] },
+      { version: 'v2', recursionLimit: 3 } as Record<string, unknown>,
+    )) {
+      n++;
+      res.write(`event: ev\ndata: ${JSON.stringify({ n, event: ev.event, name: ev.name })}\n\n`);
+      if (n >= 8) break;
+    }
+  } catch (e) {
+    res.write(`event: error\ndata: ${JSON.stringify({ msg: (e as Error).message })}\n\n`);
+  }
+  res.write('event: done\ndata: {}\n\n');
+  res.end();
+});
+
 app.use('/api/data-sources', dataSourcesRouter);
 app.use('/api/refresh', refreshRouter);
 app.use('/api/shortages', shortagesRouter);
