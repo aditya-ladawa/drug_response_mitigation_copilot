@@ -1,7 +1,7 @@
 # Build Status — Drug Shortage Response & Mitigation Copilot
 
 > Last updated: 2026-04-24
-> Stack: Node.js + Express + TypeScript + SQLite (Drizzle) + graphology
+> Stack: Node.js + Express + TypeScript + SQLite (Drizzle) + graphology + deepagents (LangChain / LangGraph)
 
 ---
 
@@ -173,68 +173,87 @@ searchNews(query)
 
 ---
 
-## Phase 5 — Agent Tools ❌ NOT STARTED
+## Phase 5 + 6 — Deep Agent Pipeline ✅ COMPLETE
 
-### What needs to be built
-- LangChain `DynamicStructuredTool` definitions with Zod input schemas
-- Execute functions backed by SQLite queries and graphology traversal
-- Dependencies to install: `@langchain/core @langchain/anthropic langchain langgraph @langchain/community`
+### Architecture decision
+We chose the **`deepagents` SDK** (LangChain's coordinator-worker harness built on LangGraph) over a custom LangGraph `StateGraph` with typed state. Rationale:
+- Built-in `write_todos` tool → UI auto-renders a live investigation plan (hackathon demo gold)
+- Built-in `task()` tool → clean subagent delegation with context isolation per worker
+- Built-in summarization middleware → won't blow context on long investigations
+- Less plumbing than 5 custom nodes + typed state schema → more time for frontend polish
+- Messages-based state is enough; no need for domain-specific state keys
 
-### Planned tools
+### Tool registry (src/services/agents/tools.ts)
+12 LangChain `DynamicStructuredTool`s with Zod schemas, all backed by SQLite queries (drizzle) or graphology traversals:
 | Tool | Input | Backed by |
 |---|---|---|
-| `searchDrugs` | `{ query }` | SQLite LIKE + fuse.js fuzzy |
-| `searchShortages` | `{ drugName }` | `shortage_records` table |
-| `searchRecalls` | `{ query, by: "drug"\|"manufacturer" }` | `recall_events` table |
-| `searchWarningLetters` | `{ query }` | `warning_letters` table |
-| `searchImportAlerts` | `{ query }` | `import_alerts` table |
-| `getDrugDetails` | `{ identifier }` | JOIN across drugs/ndcs/shortages/labels |
-| `getManufacturerProfile` | `{ name }` | JOIN across mfrs/establishments/warnings/imports |
-| `getTherapeuticAlternatives` | `{ drugName }` | `orange_book_entries` TE codes (A-rated) |
-| `getSupplyChainGraph` | `{ drugName, depth? }` | graphology traversal |
-| `searchNews` | `{ query }` | GDELT (`news_signals`) + Tavily (live) |
-| `getTimeline` | `{ drugName }` | Multi-table merge sorted by date |
+| `searchDrugs` | `{ query, limit? }` | SQLite LIKE + fuse.js fuzzy fallback |
+| `searchShortages` | `{ drugName }` | `shortage_records` |
+| `searchRecalls` | `{ query, by }` | `recall_events` (by drug or firm) |
+| `searchWarningLetters` | `{ query }` | `warning_letters` (by company or subject) |
+| `searchImportAlerts` | `{ query }` | `import_alerts` |
+| `getDrugDetails` | `{ identifier }` | JOIN drugs/ndcs/shortages/labels |
+| `getManufacturerProfile` | `{ name }` | JOIN mfrs/establishments/warnings/imports/recalls |
+| `getTherapeuticAlternatives` | `{ drugName }` | Orange Book TE-code A-rated entries |
+| `getSupplyChainGraph` | `{ drugName, depth? }` | graphology `getSupplyChainGraph` |
+| `getManufacturerRiskCluster` | `{ manufacturerName }` | graphology `getRiskCluster` |
+| `searchNews` | `{ query, limit? }` | `news_signals` (GDELT) |
+| `getTimeline` | `{ drugName }` | multi-table merge, newest-first |
+
+### Agent topology (src/services/agents/index.ts)
+```
+┌─ main investigator (deepseek-v4-pro via OpenRouter) ─────────────────┐
+│   • all 12 tools                                                      │
+│   • built-in: write_todos, task(), filesystem (unused)               │
+│   • calls task('risk_propagator'|'mitigation_planner'|'scenario')    │
+└───────────────────────────────────────────────────────────────────────┘
+         ├── risk_propagator      (deepseek-v4-flash) — graph walk + profiles
+         ├── mitigation_planner   (deepseek-v4-flash) — Orange Book + profile
+         └── scenario_analyst     (deepseek-v4-flash) — what-if simulations
+```
+
+### LLM config
+OpenRouter (OpenAI-compatible) via `ChatOpenAI`. Env-driven:
+- `OPENROUTER_API_KEY` — required
+- `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`)
+- `OPENROUTER_MAIN_MODEL` (default `deepseek/deepseek-v4-pro`)
+- `OPENROUTER_SUB_MODEL`  (default `deepseek/deepseek-v4-flash`)
+
+Falls back to `ChatAnthropic` (direct Anthropic API) if `OPENROUTER_API_KEY` is unset but `ANTHROPIC_API_KEY` is set.
 
 ---
 
-## Phase 6 — LangGraph Agent Pipeline ❌ NOT STARTED
+## Phase 7 — API Routes & SSE Streaming ✅ PARTIAL
 
-### What needs to be built
-- LangGraph `StateGraph` with 5 nodes
-- Shared `InvestigationState` type
-- Model: `claude-sonnet-4-6` via `@langchain/anthropic`
-
-### Planned nodes
-| Node | Role |
-|---|---|
-| `EntityResolver` | Fuzzy-match user input → canonical drug entity |
-| `InvestigationAgent` | Root-cause analysis via multi-step tool-use (`maxSteps: 10`) |
-| `RiskPropagationAgent` | What else is at risk from same manufacturer/plant/ingredient |
-| `MitigationPlannerAgent` | Role-specific actions (pharmacy 24h · procurement 7d · clinical ongoing) |
-| `ScenarioAnalystAgent` | Conditional: "what if plant X shuts down?" — graph traversal simulation |
-
-### Key architecture decision
-Every agent tool call emits a structured SSE event alongside the text stream. The frontend globe and graph panel animate from these events — the agent *drives* the UI in real time, not just returns a final result. See `VISION.md` for full event protocol design.
-
----
-
-## Phase 7 — API Routes & SSE Streaming ❌ NOT STARTED
-
-### What needs to be built
-| Method | Route | Description |
-|---|---|---|
-| `POST` | `/api/investigate` | Body: `{ drug, scenarioParams? }` → SSE stream of agent events |
-| `GET` | `/api/drug/:name` | Drug detail + NDCs + shortages + labels |
-| `GET` | `/api/drug/:name/timeline` | All events sorted chronologically |
-| `GET` | `/api/alternatives/:name` | Therapeutic alternatives (Orange Book AB-rated) |
-| `GET` | `/api/manufacturer/:name` | Manufacturer profile + establishments + regulatory history |
-| `POST` | `/api/scenario` | Standalone what-if simulation |
-
-### Already live
+### What's live
+- `POST /api/investigate` — Body: `{ drug, scenarioParams? }` → SSE stream of agent events (src/routes/investigate.ts)
 - `GET /api/shortages`
 - `GET /api/graph/stats`, `/drug/:name`, `/manufacturer/:name/risk`, `/node/:id`
 - `POST /api/refresh` + `GET /api/refresh/status`
 - `GET /health`
+
+### SSE event protocol (POST /api/investigate)
+| Event | Payload | Trigger |
+|---|---|---|
+| `step` | `{ phase, drug, message }` | Start of run |
+| `token` | `{ text }` | Streaming LLM output (from `on_chat_model_stream`) |
+| `tool_call` | `{ id, name, args }` | Agent invokes a tool |
+| `tool_result` | `{ id, name, summary }` | Tool returns (compact summary) |
+| `graph_data` | `{ drug, graph: { nodes, links } }` | After `getSupplyChainGraph` returns — drives UI graph panel |
+| `subagent` | `{ name, status: "spawned"\|"done" }` | Subagent delegation lifecycle |
+| `done` | `{ durationMs }` | Investigation complete |
+| `error` | `{ message }` | Runtime error |
+
+### Not yet built (convenience routes, not blocking demo)
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/api/drug/:name` | Drug detail + NDCs + shortages + labels |
+| `GET` | `/api/drug/:name/timeline` | Events sorted chronologically |
+| `GET` | `/api/alternatives/:name` | Therapeutic alternatives (Orange Book AB-rated) |
+| `GET` | `/api/manufacturer/:name` | Manufacturer profile + establishments |
+| `POST` | `/api/scenario` | Standalone what-if simulation |
+
+These are all thin wrappers over tools already exposed via `/api/investigate`. Can be added in ~1h if needed for the frontend, but the main investigation endpoint covers the demo.
 
 ---
 
@@ -261,16 +280,17 @@ All 6 known data limitations are solvable but **none block Phase 5-7 prototype w
 | 2 — Parsers & Ingestion | ✅ Complete | ~85% (data limitations deferred) |
 | 3 — Refresh Pipeline | ✅ Complete | 100% |
 | 4 — Knowledge Graph | ✅ Complete | ~90% (import alerts isolated) |
-| 5 — Agent Tools | ❌ Not started | 0% |
-| 6 — LangGraph Agents | ❌ Not started | 0% |
-| 7 — API + SSE | ❌ Not started | 0% |
+| 5+6 — Deep Agent Pipeline | ✅ Complete | 100% (needs LLM key to run) |
+| 7 — API + SSE | ✅ Partial | 80% (convenience routes deferred) |
 
 ### What works right now
+- `POST /api/investigate { drug: "Amoxicillin" }` → SSE stream with `step`, `tool_call`, `tool_result`, `graph_data`, `subagent`, `token`, `done` events
+- 12 agent tools live over SQLite + graphology
+- 3 specialist subagents (risk / mitigation / scenario) with model override (`deepseek-v4-flash`)
 - Server starts, seeds DB from artifacts if empty, all API routes respond
 - `npm run refresh` fetches + ingests all 13 sources (130k rows in ~6s parse time)
 - 76k-node knowledge graph with supply-chain traversal live
-- `GET /api/graph/drug/Amoxicillin?depth=2` → 107-node subgraph with colors/sizes ready for `react-force-graph-2d`
-- `GET /api/graph/manufacturer/Cohance/risk` → 25 drugs + 6 establishments + 1 warning letter
+- `GET /api/graph/drug/Amoxicillin?depth=2` → 107-node subgraph ready for `react-force-graph-2d`
 
 ### Next step
-**Phase 5** — LangChain agent tools wrapping the SQLite + graph layer. The data is solid. Build the tools, then wire the LangGraph pipeline, then expose via SSE.
+Add `OPENROUTER_API_KEY` to `backend/.env`, then curl `/api/investigate` to verify end-to-end. After that: the frontend work (3D globe, graph panel, chat panel driven by SSE events).

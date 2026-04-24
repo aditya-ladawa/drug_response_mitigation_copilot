@@ -6,6 +6,7 @@ import cors from 'cors';
 import express from 'express';
 import dataSourcesRouter from './routes/dataSources';
 import graphRouter from './routes/graph';
+import investigateRouter from './routes/investigate';
 import refreshRouter from './routes/refresh';
 import shortagesRouter from './routes/shortages';
 import { seedIfEmpty } from './services/refresh';
@@ -30,6 +31,7 @@ app.use('/api/data-sources', dataSourcesRouter);
 app.use('/api/refresh', refreshRouter);
 app.use('/api/shortages', shortagesRouter);
 app.use('/api/graph', graphRouter);
+app.use('/api/investigate', investigateRouter);
 
 const server = app.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);
