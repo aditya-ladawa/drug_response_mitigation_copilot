@@ -1,7 +1,6 @@
-import { ChatAnthropic } from '@langchain/anthropic';
-import { ChatOpenAI } from '@langchain/openai';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { createDeepAgent, type SubAgent } from 'deepagents';
+import { TubChatModel } from './tub-chat-model';
 import {
   ALL_TOOLS,
   MITIGATION_TOOLS,
@@ -20,60 +19,54 @@ import {
 type GlobalWithAgent = typeof globalThis & { __investigationAgent?: ReturnType<typeof buildAgent> };
 
 /**
- * Build a chat model for a specific model name.
- * Routes via OpenRouter (OpenAI-compatible ChatOpenAI) when OPENROUTER_API_KEY is set.
- * Falls back to ChatAnthropic if an Anthropic key is available (only for Claude models).
- *
- * Defaults from env:
- *   - OPENROUTER_MAIN_MODEL  (main agent)    — deepseek/deepseek-v4-pro
- *   - OPENROUTER_SUB_MODEL   (subagents)     — deepseek/deepseek-v4-flash
+ * Extract the API base (up to `/api/v1` or similar) and the endpoint path.
+ * Accepts either the base URL alone (`.../api/v1`) or the full endpoint
+ * (`.../api/v1/chat/send`). Always separates them since the KI-Toolbox uses
+ * the custom `/chat/send` path, not OpenAI's `/chat/completions`.
  */
-function buildOpenRouterModel(modelName: string): BaseChatModel {
-  const key = process.env.OPENROUTER_API_KEY;
+function splitTubUrl(raw: string): { apiBase: string; endpoint: string } {
+  let url = raw.trim().replace(/\/+$/, '');
+  const match = url.match(/^(.*?)(\/api\/v\d+\/chat\/(?:send|completions))$/i);
+  if (match) return { apiBase: match[1], endpoint: match[2] };
+  // Fallback: treat raw as apiBase, use default endpoint
+  return { apiBase: url, endpoint: '/api/v1/chat/send' };
+}
+
+/**
+ * Build a TUB chat model for a specific model name.
+ *
+ * Env:
+ *   - TUB_API_KEY          required
+ *   - TUB_BASE_URL         full endpoint (e.g. https://ki-toolbox.tu-braunschweig.de/api/v1/chat/send)
+ *                          or just the host (https://ki-toolbox.tu-braunschweig.de)
+ *   - TUB_MAIN_MODEL       (default gpt-5.4)
+ *   - TUB_SUB_MODEL        (default gpt-5.4-mini)
+ */
+function buildTubModel(modelName: string): BaseChatModel {
+  const key = process.env.TUB_API_KEY;
   if (!key) {
     throw new Error(
-      'OPENROUTER_API_KEY missing. Add it to backend/.env to run the investigation agent.',
+      'TUB_API_KEY missing. Add it to backend/.env to run the investigation agent.',
     );
   }
-  const baseURL = process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1';
-  return new ChatOpenAI({
-    model: modelName,
+  const rawBase = process.env.TUB_BASE_URL ?? 'https://ki-toolbox.tu-braunschweig.de/api/v1/chat/send';
+  const { apiBase, endpoint } = splitTubUrl(rawBase);
+  return new TubChatModel({
     apiKey: key,
-    temperature: 0,
-    maxRetries: 3,
-    streaming: true,
-    configuration: { baseURL },
+    apiBase,
+    endpoint,
+    modelName,
   });
 }
 
 function buildMainModel(): BaseChatModel {
-  if (process.env.OPENROUTER_API_KEY) {
-    const modelName = process.env.OPENROUTER_MAIN_MODEL ?? 'deepseek/deepseek-v4-pro';
-    return buildOpenRouterModel(modelName);
-  }
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  if (anthropicKey) {
-    const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
-    return new ChatAnthropic({
-      model,
-      apiKey: anthropicKey,
-      temperature: 0,
-      maxRetries: 3,
-      streaming: true,
-    });
-  }
-  throw new Error(
-    'No LLM credentials found. Set OPENROUTER_API_KEY (preferred) or ANTHROPIC_API_KEY in backend/.env.',
-  );
+  const modelName = process.env.TUB_MAIN_MODEL ?? 'gpt-5.4';
+  return buildTubModel(modelName);
 }
 
 function buildSubagentModel(): BaseChatModel {
-  if (process.env.OPENROUTER_API_KEY) {
-    const modelName = process.env.OPENROUTER_SUB_MODEL ?? 'deepseek/deepseek-v4-flash';
-    return buildOpenRouterModel(modelName);
-  }
-  // Fall back to the main model for subagents if OpenRouter not configured.
-  return buildMainModel();
+  const modelName = process.env.TUB_SUB_MODEL ?? 'gpt-5.4-mini';
+  return buildTubModel(modelName);
 }
 
 function buildAgent() {
