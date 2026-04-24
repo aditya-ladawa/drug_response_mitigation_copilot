@@ -120,17 +120,28 @@ router.post('/', async (req: Request, res: Response) => {
     return;
   }
 
-  // SSE headers
+  // SSE headers + disable Nagle so small writes flush to client immediately.
+  // Without setNoDelay, Node's HTTP response buffers small chunks (< ~16KB)
+  // which can stall SSE streams until a later larger write arrives.
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
+  try { (res.socket as { setNoDelay?: (b: boolean) => void } | null)?.setNoDelay?.(true); } catch { /* noop */ }
 
   const started = Date.now();
   let closed = false;
   req.on('close', () => { closed = true; });
 
   sse(res, 'start', { drug });
+
+  // Keepalive comment every 10s so the client knows the connection is alive
+  // even during long LLM calls. SSE clients ignore comment lines (":...").
+  const heartbeat = setInterval(() => {
+    if (closed) return;
+    try { res.write(': keepalive\n\n'); } catch { /* noop */ }
+  }, 10_000);
 
   let agent;
   try {
@@ -221,8 +232,11 @@ router.post('/', async (req: Request, res: Response) => {
     console.error('[investigate] error:', (err as Error).message);
     if (!closed) sse(res, 'error', { message: (err as Error).message });
   } finally {
+    clearInterval(heartbeat);
     if (!closed) res.end();
   }
 });
 
 export default router;
+
+// trigger 1777063504
