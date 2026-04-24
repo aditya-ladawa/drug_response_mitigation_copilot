@@ -113,7 +113,9 @@ router.post('/', async (req: Request, res: Response) => {
     let evCount = 0;
     for await (const ev of eventStream) {
       evCount++;
-      if (evCount <= 10) dbg(`ev #${evCount} kind=${ev.event} name=${ev.name}`);
+      dbg(`ev #${evCount} kind=${ev.event} name=${ev.name}`);
+      // Emit raw debug events to client so we can see them in curl output
+      sse(res, 'raw', { n: evCount, event: ev.event, name: ev.name });
       if (closed) break;
 
       const kind = ev.event;
