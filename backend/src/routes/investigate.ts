@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { AIMessageChunk, ToolMessage } from '@langchain/core/messages';
 import type { StreamEvent } from '@langchain/core/tracers/log_stream';
-import { getInvestigationAgent } from '../services/agents';
+import { buildFreshAgent, getInvestigationAgent } from '../services/agents';
 
 const router = Router();
 
@@ -87,7 +87,9 @@ router.post('/', async (req: Request, res: Response) => {
 
   let agent;
   try {
-    agent = getInvestigationAgent();
+    // Using fresh agent per request to rule out singleton state issues.
+    // Swap to getInvestigationAgent() once stable.
+    agent = getInvestigationAgent.length === 0 ? buildFreshAgent() : getInvestigationAgent();
   } catch (err) {
     clearInterval(heartbeat);
     sse(res, 'error', { message: (err as Error).message });
@@ -96,12 +98,22 @@ router.post('/', async (req: Request, res: Response) => {
   }
 
   try {
+    // Log every event to file for debugging
+    const debugFs = require('fs') as typeof import('fs');
+    debugFs.writeFileSync('/tmp/investigate-debug.log', `=== ${new Date().toISOString()} start ===\n`);
+    const dbg = (m: string) => debugFs.appendFileSync('/tmp/investigate-debug.log', new Date().toISOString() + ' ' + m + '\n');
+
+    dbg('calling streamEvents');
     const eventStream = agent.streamEvents(
       { messages: [{ role: 'user', content: buildPrompt(drug.trim(), scenarioParams?.trim()) }] },
       { version: 'v2', recursionLimit: 60 } as Record<string, unknown>,
     ) as AsyncIterable<StreamEvent>;
+    dbg('streamEvents returned, entering for-await');
 
+    let evCount = 0;
     for await (const ev of eventStream) {
+      evCount++;
+      if (evCount <= 10) dbg(`ev #${evCount} kind=${ev.event} name=${ev.name}`);
       if (closed) break;
 
       const kind = ev.event;
