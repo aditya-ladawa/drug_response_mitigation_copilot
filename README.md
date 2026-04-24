@@ -8,38 +8,96 @@ role-specific mitigation actions — driven by a live knowledge graph of 13 FDA 
 
 ## If Darshan (frontend):
 
-You only need to run two commands from the repo root:
+### Workflow
 
 ```bash
-# Terminal 1 — backend API (port 3001)
+# 1. Pull latest
+git pull origin adi_dev
+
+# 2. Install & run backend (Terminal 1) — port 3001
 cd backend && npm install && npm run dev
 
-# Terminal 2 — frontend dev server (port 3000)
+# 3. Install & run frontend (Terminal 2) — port 3000
 cd frontend && npm install && npm run dev
+
+# 4. Open http://localhost:3000
+#    When done, commit your changes and push to adi_dev:
+git add .
+git commit -m "frontend: <what you built>"
+git push origin adi_dev
 ```
 
-Open http://localhost:3000. The backend must be running for any API calls to work.
+The backend auto-seeds the SQLite DB from pre-fetched artifacts on first start (~6s). No extra step needed.
 
-**Backend base URL:** `http://localhost:3001`
+---
 
-Key endpoints available right now (no agent needed):
+### Layout we want
+
+```
++----------------------------------------------------------+
+|  Drug Shortage Copilot                      [dark theme]  |
++----------------------------------------------------------+
+|                                                          |
+|   Investigate a drug shortage:                           |
+|   +------------------------------------------+  [Go]    |
+|   |  e.g. Amoxicillin, Adderall, Vincristine |           |
+|   +------------------------------------------+           |
+|                                                          |
++-------------------------+--------------------------------+
+|                         |                                |
+|   3D GLOBE              |   KNOWLEDGE GRAPH PANEL        |
+|                         |                                |
+|   (react-globe.gl)      |   (react-force-graph-2d)       |
+|                         |                                |
+|   - Pins = mfr plants   |   - Nodes: drug, mfr, plant,  |
+|   - Arcs = supply chain |     recall, warning letter     |
+|   - Red pulse = problem |   - Auto-updates as agent runs |
+|     plant               |                                |
+|                         |--------------------------------|
+|                         |                                |
+|                         |   CHAT / AGENT STREAM PANEL    |
+|                         |                                |
+|                         |   Agent: "Root cause: CGMP     |
+|                         |   violation at Acme Pharma     |
+|                         |   Cincinnati plant (68% of     |
+|                         |   supply)..."                  |
+|                         |                                |
++-------------------------+--------------------------------+
+```
+
+**Left column (50%)** — `react-globe.gl`: 3D animated earth. Pins light up as the agent identifies
+implicated plants. Arcs show supply-chain flow. Problem plant pulses red.
+
+**Right top (50%)** — `react-force-graph-2d`: knowledge graph subgraph. Feeds from
+`GET /api/graph/drug/:name?depth=2` — the backend returns `{ nodes, links }` ready to use directly.
+
+**Right bottom** — Chat/stream panel. Displays agent reasoning as SSE events arrive.
+Each agent tool call (searchShortages, getManufacturerProfile, etc.) prints a step and
+animates the panels above it.
+
+**Search bar** at the top — single text input + Go button. On submit:
+- (Now, pre-agent) `GET /api/graph/drug/{input}?depth=2` → render the graph panel
+- (Phase 5-6) `POST /api/investigate { drug: input }` → open SSE stream, drive all three panels
+
+---
+
+### Live endpoints (wire these up now)
+
 | Endpoint | What it returns |
 |---|---|
-| `GET /health` | Server status |
 | `GET /api/shortages` | All current drug shortages |
-| `GET /api/graph/stats` | Knowledge graph node/edge counts |
-| `GET /api/graph/drug/:name?depth=2` | Supply-chain subgraph for a drug (use for force graph) |
+| `GET /api/graph/drug/:name?depth=2` | `{ nodes, links }` for force graph |
 | `GET /api/graph/manufacturer/:name/risk` | Risk cluster: drugs, plants, warnings, recalls |
-| `GET /api/refresh/status` | Last data refresh timestamp + stats |
+| `GET /api/graph/stats` | Node/edge counts (use for a stats bar) |
+| `GET /api/refresh/status` | Last data refresh time |
 
-Example:
+Example call:
 ```
 GET http://localhost:3001/api/graph/drug/Amoxicillin?depth=2
-→ { nodes: [...], links: [...] }   # ready for react-force-graph-2d
+→ { nodes: [...107 nodes...], links: [...] }
 ```
 
-The agent investigation endpoint (`POST /api/investigate`) is coming in Phase 5-6. For now,
-wire up the graph visualization and shortage list using the endpoints above.
+`POST /api/investigate` (SSE stream) arrives in Phase 5-6 — stub it out for now.
 
 ---
 
