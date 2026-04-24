@@ -98,7 +98,7 @@ router.post('/', async (req: Request, res: Response) => {
   try {
     const eventStream = agent.streamEvents(
       { messages: [{ role: 'user', content: buildPrompt(drug.trim(), scenarioParams?.trim()) }] },
-      { version: 'v2', recursionLimit: 60, subgraphs: true } as Record<string, unknown>,
+      { version: 'v2', recursionLimit: 60 } as Record<string, unknown>,
     ) as AsyncIterable<StreamEvent>;
 
     for await (const ev of eventStream) {

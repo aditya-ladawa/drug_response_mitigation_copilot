@@ -42,7 +42,7 @@ app.get('/test-sse', async (_req, res) => {
   try {
     for await (const ev of agent.streamEvents(
       { messages: [{ role: 'user', content: 'Say: hi' }] },
-      { version: 'v2', recursionLimit: 3 } as Record<string, unknown>,
+      { version: 'v2', recursionLimit: 10 } as Record<string, unknown>,
     )) {
       n++;
       res.write(`event: ev\ndata: ${JSON.stringify({ n, event: ev.event, name: ev.name })}\n\n`);
