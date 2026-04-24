@@ -10,18 +10,19 @@ const router = Router();
 // Body: { drug: string, scenarioParams?: string }
 //
 // Events (all carry a `source`: "main" | "sub:<pregel_id>"):
-//   event: start         { drug }
-//   event: step          { source, node }                high-level graph step
-//   event: token         { source, text }                streamed LLM tokens
-//   event: tool_call     { source, name, args }          agent calling a tool
-//   event: tool_result   { source, name, preview }       tool output, capped @120
-//   event: graph_data    { drug, graph }                 supply-chain graph payload
-//   event: message       { source, content }             final assistant answer
-//   event: done          { durationMs }
-//   event: error         { message }
+//   event: start           { drug }
+//   event: step            { source, node }                graph step just ran
+//   event: token           { source, text }                streamed LLM tokens (verbose)
+//   event: tool_call       { source, name, args }          agent calling a tool
+//   event: tool_result     { source, name, preview }       tool output, capped @120
+//   event: agent_response  { source, preview }             agent's assistant text, capped @200
+//   event: graph_data      { drug, graph }                 supply-chain graph payload
+//   event: done            { durationMs }
+//   event: error           { message }
 // ─────────────────────────────────────────────────────────────────────────────
 
-const PREVIEW_CHARS = 120;
+const TOOL_PREVIEW_CHARS = 120;
+const AGENT_PREVIEW_CHARS = 200;
 
 interface InvestigateBody {
   drug?: string;
@@ -53,7 +54,7 @@ function sourceFromNamespace(namespace: string[]): string {
   return sub ? `sub:${sub.split(':')[1]?.slice(0, 8) ?? 'unknown'}` : 'sub';
 }
 
-function preview(v: unknown, cap = PREVIEW_CHARS): string {
+function preview(v: unknown, cap: number): string {
   let s: string;
   if (v == null) s = '';
   else if (typeof v === 'string') s = v;
@@ -65,6 +66,49 @@ function preview(v: unknown, cap = PREVIEW_CHARS): string {
     }
   }
   return s.length > cap ? s.slice(0, cap) + '…' : s;
+}
+
+/** Extract the user-visible text from an agent's response.
+ *  TUB models wrap tool_calls and final answers in JSON — unwrap {type:"final",content}. */
+function extractAgentText(content: unknown): string {
+  let raw = '';
+  if (typeof content === 'string') raw = content;
+  else if (Array.isArray(content)) {
+    raw = content
+      .map((p) =>
+        typeof p === 'string'
+          ? p
+          : p && typeof p === 'object' && 'text' in p
+            ? String((p as { text: unknown }).text)
+            : '',
+      )
+      .join('');
+  } else if (content != null) {
+    try {
+      raw = JSON.stringify(content);
+    } catch {
+      raw = String(content);
+    }
+  }
+  raw = raw.trim();
+  if (raw.startsWith('```')) {
+    raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.type === 'final' && typeof parsed.content === 'string') {
+        return parsed.content;
+      }
+      if (parsed.type === 'tool_call') {
+        // Suppress tool_call JSON in agent_response; tool_call event is emitted separately.
+        return '';
+      }
+    }
+  } catch {
+    /* not JSON — use raw */
+  }
+  return raw;
 }
 
 router.post('/', async (req: Request, res: Response) => {
@@ -178,14 +222,34 @@ router.post('/', async (req: Request, res: Response) => {
           writeEvent(res, 'tool_result', {
             source,
             name: msg.name,
-            preview: preview(msg.content),
+            preview: preview(msg.content, TOOL_PREVIEW_CHARS),
           });
         }
       } else if (mode === 'updates') {
         // data is { [nodeName]: nodeOutput } — the graph step that just ran
         const updates = data as Record<string, unknown>;
-        for (const nodeName of Object.keys(updates)) {
+        for (const [nodeName, nodeOutput] of Object.entries(updates)) {
           writeEvent(res, 'step', { source, node: nodeName });
+
+          // Extract assistant text from model nodes — capped at AGENT_PREVIEW_CHARS.
+          // Tool nodes emit ToolMessages which go through the 'messages' stream path.
+          if (nodeName === 'model_request' || nodeName === 'agent') {
+            const msgs =
+              (nodeOutput as { messages?: unknown[] })?.messages ??
+              (Array.isArray(nodeOutput) ? (nodeOutput as unknown[]) : []);
+            for (const m of msgs) {
+              if (m && typeof m === 'object') {
+                const content = (m as { content?: unknown }).content;
+                const text = extractAgentText(content);
+                if (text.trim()) {
+                  writeEvent(res, 'agent_response', {
+                    source,
+                    preview: preview(text, AGENT_PREVIEW_CHARS),
+                  });
+                }
+              }
+            }
+          }
         }
       }
     }
