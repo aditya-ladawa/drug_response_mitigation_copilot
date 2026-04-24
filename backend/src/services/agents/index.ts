@@ -105,8 +105,3 @@ export function getInvestigationAgent(): ReturnType<typeof buildAgent> {
   }
   return g.__investigationAgent;
 }
-
-/** Fresh agent per call — use to rule out singleton corruption mid-debugging. */
-export function buildFreshAgent(): ReturnType<typeof buildAgent> {
-  return buildAgent();
-}

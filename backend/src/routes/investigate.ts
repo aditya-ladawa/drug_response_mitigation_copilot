@@ -1,16 +1,24 @@
 import { Router, Request, Response } from 'express';
-import { AIMessageChunk, ToolMessage } from '@langchain/core/messages';
+import { AIMessageChunk } from '@langchain/core/messages';
 import { getInvestigationAgent } from '../services/agents';
 
 const router = Router();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/investigate  —  SSE stream of the deep agent graph.
-// Minimal implementation that mirrors the working /test-sse structure.
+//
+// Events:
+//   event: start        { drug }
+//   event: tool_call    { name, args }                  agent invoking a tool
+//   event: tool_result  { name, preview }               tool output @120 chars
+//   event: token        { text }                         streamed LLM text
+//   event: graph_data   { drug, graph }                  force-graph JSON
+//   event: subagent     { name, status }                 subagent lifecycle
+//   event: done         { durationMs }
+//   event: error        { message }
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TOOL_PREVIEW = 120;
-const AGENT_PREVIEW = 200;
 
 interface InvestigateBody {
   drug?: string;
@@ -111,9 +119,5 @@ router.post('/', async (req: Request, res: Response) => {
   }
   res.end();
 });
-
-// Unused import guard
-void ToolMessage;
-void AGENT_PREVIEW;
 
 export default router;
