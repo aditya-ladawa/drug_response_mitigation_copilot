@@ -1,17 +1,18 @@
 /**
- * TypeScript port of the TU Braunschweig KI-Toolbox chat model.
+ * TU Braunschweig KI-Toolbox chat model.
  *
- * The KI-Toolbox API is NOT OpenAI-compatible — it has its own protocol:
+ * Protocol (NOT OpenAI-compatible):
  *   POST /api/v1/chat/send
  *   Body: { thread, prompt, model, customInstructions, hideCustomInstructions }
- *   Response: JSON-lines stream of { type: "start"|"chunk"|"done", ... }
+ *   Response: JSON-line stream — {type:"start"}, {type:"chunk", content}, {type:"done", response, promptTokens,...}
  *
- * Tools are NOT supported natively. We use prompt-based tool calling: the system
- * prompt instructs the model to emit JSON of the form:
- *   { "type": "tool_call", "name": "<tool>", "arguments": {...} }
- *   { "type": "final", "content": "<answer>" }
- * We parse that back into an AIMessage with tool_calls populated, so LangGraph's
- * ReactAgent (and deepagents on top of it) works as if the model had native tools.
+ * Tools are simulated via prompt-based JSON contract:
+ *   {"type":"tool_call","name":"<tool>","arguments":{...}}
+ *   {"type":"final","content":"<answer>"}
+ * We parse into AIMessage.tool_calls so LangGraph drives the tool loop natively.
+ *
+ * Streaming: implements _streamResponseChunks so `agent.stream(...,{streamMode:"messages"})`
+ * yields token-level AIMessageChunks and `streamEvents` fires on_chat_model_stream.
  */
 
 import { randomUUID } from 'crypto';
@@ -24,12 +25,14 @@ import {
 } from '@langchain/core/language_models/chat_models';
 import {
   AIMessage,
+  AIMessageChunk,
   type BaseMessage,
   HumanMessage,
   SystemMessage,
   ToolMessage,
 } from '@langchain/core/messages';
-import type { ChatGeneration, ChatResult } from '@langchain/core/outputs';
+import { ChatGenerationChunk } from '@langchain/core/outputs';
+import type { ChatResult } from '@langchain/core/outputs';
 import type { Runnable } from '@langchain/core/runnables';
 
 export interface TubChatModelFields extends BaseChatModelParams {
@@ -46,19 +49,6 @@ interface TubCallOptions extends BaseChatModelCallOptions {
   tools?: BindToolsInput[];
   tool_choice?: string;
 }
-
-interface ToolCallJson {
-  type: 'tool_call';
-  name: string;
-  arguments: Record<string, unknown>;
-}
-
-interface FinalJson {
-  type: 'final';
-  content: string;
-}
-
-type ModelJson = ToolCallJson | FinalJson | Record<string, unknown>;
 
 export class TubChatModel extends BaseChatModel<TubCallOptions> {
   apiKey: string;
@@ -87,62 +77,29 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
   }
 
   bindTools(tools: BindToolsInput[], kwargs?: Partial<TubCallOptions>): Runnable {
-    // Runnable.withConfig merges { tools, tool_choice } into default call options,
-    // so _generate() reads them from `options.tools`. (`bind` was renamed to
-    // `withConfig` in recent LangChain.js versions.)
-    return this.withConfig({
-      tools,
-      ...(kwargs ?? {}),
-    } as Partial<TubCallOptions>);
+    return this.withConfig({ tools, ...(kwargs ?? {}) } as Partial<TubCallOptions>);
   }
 
-  async _generate(
+  // ─── Streaming: the primary code path ──────────────────────────────────────
+  // LangGraph agents call this for stream_mode: "messages" and streamEvents.
+  // Yields AIMessageChunks as TUB sends them, then a final chunk carrying
+  // tool_call_chunks if the model requested a tool.
+
+  async *_streamResponseChunks(
     messages: BaseMessage[],
     options: this['ParsedCallOptions'],
     runManager?: CallbackManagerForLLMRun,
-  ): Promise<ChatResult> {
+  ): AsyncGenerator<ChatGenerationChunk> {
     const tools = Array.isArray(options?.tools) ? (options.tools as BindToolsInput[]) : [];
-    const toolChoice = options?.tool_choice;
-    const prompt = this.buildPrompt(messages, tools, toolChoice);
+    const prompt = this.buildPrompt(messages, tools, options?.tool_choice);
 
-    const controller = new AbortController();
-    const signal = options?.signal ?? controller.signal;
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-
-    let response: Response;
-    try {
-      response = await fetch(`${this.apiBase}${this.endpoint}`, {
-        method: 'POST',
-        headers: {
-          accept: 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          thread: null,
-          prompt,
-          model: this.modelName,
-          customInstructions: this.customInstructions,
-          hideCustomInstructions: this.hideCustomInstructions,
-        }),
-        signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-
-    if (!response.ok || !response.body) {
-      const detail = response.body ? await response.text().catch(() => '') : '';
-      throw new Error(
-        `KI-Toolbox ${response.status} ${response.statusText}: ${detail.slice(0, 500)}`,
-      );
-    }
+    const response = await this.doFetch(prompt, options?.signal);
 
     let text = '';
     let threadId: string | null = null;
-    let usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | undefined;
+    let usage: UsageMeta | undefined;
 
-    const reader = response.body.getReader();
+    const reader = response.body!.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
 
@@ -160,7 +117,7 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
           try {
             event = JSON.parse(line);
           } catch {
-            continue; // ignore non-JSON keep-alives
+            continue;
           }
           const type = event.type;
           if (type === 'start') {
@@ -169,28 +126,25 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
             const content = String(event.content ?? '');
             if (content) {
               text += content;
-              // Callback failures must not abort the response — swallow + log.
               try {
                 await runManager?.handleLLMNewToken(content);
-              } catch (err) {
-                console.warn('[TubChatModel] token callback error:', (err as Error).message);
+              } catch {
+                /* swallow callback errors */
               }
+              yield new ChatGenerationChunk({
+                text: content,
+                message: new AIMessageChunk({ content }),
+              });
             }
           } else if (type === 'done') {
             text = String(event.response ?? text);
             threadId = (event.conversationThread as string | null) ?? threadId;
-            usage = {
-              input_tokens: Number(event.promptTokens) || undefined,
-              output_tokens: Number(event.responseTokens) || undefined,
-              total_tokens: Number(event.totalTokens) || undefined,
-            };
+            usage = this.parseUsage(event);
           }
         }
       }
-      // Flush any trailing buffered bytes
       buffer += decoder.decode();
     } finally {
-      // Ensure the reader is released even if the loop threw.
       try {
         reader.releaseLock();
       } catch {
@@ -198,35 +152,122 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
       }
     }
 
-    const trailing = buffer.trim();
-    if (trailing) {
-      try {
-        const event = JSON.parse(trailing);
-        if (event.type === 'done') {
-          text = String(event.response ?? text);
-          usage = {
-            input_tokens: Number(event.promptTokens) || undefined,
-            output_tokens: Number(event.responseTokens) || undefined,
-            total_tokens: Number(event.totalTokens) || undefined,
-          };
-        }
-      } catch {
-        // ignore
-      }
-    }
+    const parsed = this.parseJsonObject(text);
+    const toolNames = new Set(
+      tools.map((t) => (t as { name?: string }).name).filter((n): n is string => Boolean(n)),
+    );
 
-    const message = this.toAiMessage(text, tools, threadId, usage);
-    const generation: ChatGeneration = {
-      text: typeof message.content === 'string' ? message.content : '',
-      message,
-    };
-    return { generations: [generation], llmOutput: usage ? { tokenUsage: usage } : {} };
+    // If the model emitted a tool_call, yield a final chunk with tool_call_chunks.
+    // LangChain aggregates these into AIMessage.tool_calls for LangGraph.
+    if (parsed && parsed.type === 'tool_call' && typeof parsed.name === 'string' && toolNames.has(parsed.name)) {
+      const args = (parsed.arguments ?? {}) as Record<string, unknown>;
+      yield new ChatGenerationChunk({
+        text: '',
+        message: new AIMessageChunk({
+          content: '',
+          tool_call_chunks: [
+            {
+              name: parsed.name,
+              args: JSON.stringify(args),
+              id: `call_${randomUUID().replace(/-/g, '')}`,
+              index: 0,
+              type: 'tool_call_chunk',
+            },
+          ],
+          additional_kwargs: threadId ? { thread: threadId } : {},
+          usage_metadata: usage ? this.normalizeUsage(usage) : undefined,
+        }),
+      });
+    } else if (usage) {
+      // Emit a final metadata-only chunk so usage is attached to the aggregated message.
+      yield new ChatGenerationChunk({
+        text: '',
+        message: new AIMessageChunk({
+          content: '',
+          additional_kwargs: threadId ? { thread: threadId } : {},
+          usage_metadata: this.normalizeUsage(usage),
+        }),
+      });
+    }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Prompt construction — must exactly match the contract the model is trained
-  // against. If you change the tool_call / final JSON shape, update toAiMessage too.
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─── Non-streaming fallback ────────────────────────────────────────────────
+  // Some call paths (structured output, non-streaming invoke) hit _generate.
+  // Delegate to the streaming path and concat the chunks.
+
+  async _generate(
+    messages: BaseMessage[],
+    options: this['ParsedCallOptions'],
+    runManager?: CallbackManagerForLLMRun,
+  ): Promise<ChatResult> {
+    let aggregated: ChatGenerationChunk | undefined;
+    for await (const chunk of this._streamResponseChunks(messages, options, runManager)) {
+      aggregated = aggregated ? aggregated.concat(chunk) : chunk;
+    }
+    if (!aggregated) {
+      return {
+        generations: [{ text: '', message: new AIMessage({ content: '' }) }],
+      };
+    }
+    return { generations: [aggregated] };
+  }
+
+  // ─── HTTP + parsing helpers ────────────────────────────────────────────────
+
+  private async doFetch(prompt: string, signal?: AbortSignal): Promise<Response> {
+    const controller = new AbortController();
+    const useSignal = signal ?? controller.signal;
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await fetch(`${this.apiBase}${this.endpoint}`, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          thread: null,
+          prompt,
+          model: this.modelName,
+          customInstructions: this.customInstructions,
+          hideCustomInstructions: this.hideCustomInstructions,
+        }),
+        signal: useSignal,
+      });
+      if (!response.ok || !response.body) {
+        const detail = response.body ? await response.text().catch(() => '') : '';
+        throw new Error(
+          `KI-Toolbox ${response.status} ${response.statusText}: ${detail.slice(0, 500)}`,
+        );
+      }
+      return response;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private parseUsage(event: Record<string, unknown>): UsageMeta {
+    return {
+      input_tokens: Number(event.promptTokens) || undefined,
+      output_tokens: Number(event.responseTokens) || undefined,
+      total_tokens: Number(event.totalTokens) || undefined,
+    };
+  }
+
+  private normalizeUsage(u: UsageMeta): {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  } {
+    return {
+      input_tokens: u.input_tokens ?? 0,
+      output_tokens: u.output_tokens ?? 0,
+      total_tokens: u.total_tokens ?? 0,
+    };
+  }
+
+  // ─── Prompt / message rendering ────────────────────────────────────────────
 
   private buildPrompt(
     messages: BaseMessage[],
@@ -234,7 +275,6 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
     toolChoice?: string,
   ): string {
     const parts: string[] = ['You are a helpful assistant.'];
-
     if (tools.length) {
       parts.push(
         'Tools are available.',
@@ -248,7 +288,6 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
         this.renderTools(tools),
       );
     }
-
     parts.push('Conversation:');
     parts.push(...messages.map((m) => this.renderMessage(m)));
     return parts.join('\n\n');
@@ -267,7 +306,6 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
       .join('\n');
   }
 
-  /** Cheap introspection of a Zod object schema → { fieldName: "type" }. */
   private summarizeZodSchema(schema: unknown): Record<string, string> {
     if (!schema || typeof schema !== 'object') return {};
     const shape =
@@ -285,7 +323,6 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
     return out;
   }
 
-  /** AIMessage/ToolMessage.content can be a string OR an array of content blocks. */
   private stringifyContent(content: unknown): string {
     if (typeof content === 'string') return content;
     if (Array.isArray(content)) {
@@ -293,7 +330,7 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
         .map((part) => {
           if (typeof part === 'string') return part;
           if (part && typeof part === 'object') {
-            const p = part as { text?: unknown; type?: string };
+            const p = part as { text?: unknown };
             if (typeof p.text === 'string') return p.text;
             return JSON.stringify(part);
           }
@@ -322,69 +359,7 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
     return `${message._getType()}: ${content}`;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Response parsing
-  // ─────────────────────────────────────────────────────────────────────────
-
-  private toAiMessage(
-    text: string,
-    tools: BindToolsInput[],
-    threadId: string | null,
-    usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | undefined,
-  ): AIMessage {
-    const parsed = this.parseJsonObject(text);
-    const toolNames = new Set(
-      tools.map((t) => (t as { name?: string }).name).filter((n): n is string => Boolean(n)),
-    );
-
-    if (parsed && this.isToolCall(parsed) && toolNames.has(parsed.name)) {
-      return new AIMessage({
-        content: '',
-        tool_calls: [
-          {
-            name: parsed.name,
-            args: parsed.arguments,
-            id: `call_${randomUUID().replace(/-/g, '')}`,
-            type: 'tool_call',
-          },
-        ],
-        additional_kwargs: threadId ? { thread: threadId } : {},
-        usage_metadata: usage ? {
-          input_tokens: usage.input_tokens ?? 0,
-          output_tokens: usage.output_tokens ?? 0,
-          total_tokens: usage.total_tokens ?? 0,
-        } : undefined,
-      });
-    }
-
-    const finalText = parsed && this.isFinal(parsed) ? String(parsed.content ?? '') : text;
-
-    return new AIMessage({
-      content: finalText,
-      additional_kwargs: threadId ? { thread: threadId } : {},
-      usage_metadata: usage ? {
-        input_tokens: usage.input_tokens ?? 0,
-        output_tokens: usage.output_tokens ?? 0,
-        total_tokens: usage.total_tokens ?? 0,
-      } : undefined,
-    });
-  }
-
-  private isToolCall(v: ModelJson): v is ToolCallJson {
-    const obj = v as Record<string, unknown>;
-    return (
-      obj.type === 'tool_call' &&
-      typeof obj.name === 'string' &&
-      obj.arguments != null &&
-      typeof obj.arguments === 'object'
-    );
-  }
-
-  private isFinal(v: ModelJson): v is FinalJson {
-    return (v as Record<string, unknown>).type === 'final';
-  }
-
-  private parseJsonObject(text: string): ModelJson | null {
+  private parseJsonObject(text: string): Record<string, unknown> | null {
     let cleaned = text.trim();
     if (cleaned.startsWith('```')) {
       cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
@@ -392,9 +367,15 @@ export class TubChatModel extends BaseChatModel<TubCallOptions> {
     }
     try {
       const parsed = JSON.parse(cleaned);
-      return typeof parsed === 'object' && parsed !== null ? (parsed as ModelJson) : null;
+      return typeof parsed === 'object' && parsed !== null ? parsed : null;
     } catch {
       return null;
     }
   }
+}
+
+interface UsageMeta {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
 }

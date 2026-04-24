@@ -1,24 +1,27 @@
 import { Router, Request, Response } from 'express';
+import { AIMessageChunk, ToolMessage } from '@langchain/core/messages';
 import { getInvestigationAgent } from '../services/agents';
 
 const router = Router();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/investigate
+// POST /api/investigate  —  SSE stream of the agent graph running.
 //
 // Body: { drug: string, scenarioParams?: string }
-// Streams SSE events as the deep agent runs:
-//   event: step          → high-level progress marker
-//   event: tool_call     → { name, args, id }
-//   event: tool_result   → { name, id, result }
-//   event: token         → { text }
-//   event: subagent      → { name, status, task? }
-//   event: todos         → { todos: [...] }
-//   event: graph_data    → { drug, graph: { nodes, links } }
-//   event: message       → { role, content }
-//   event: done          → { durationMs }
-//   event: error         → { message }
+//
+// Events (all carry a `source`: "main" | "sub:<pregel_id>"):
+//   event: start         { drug }
+//   event: step          { source, node }                high-level graph step
+//   event: token         { source, text }                streamed LLM tokens
+//   event: tool_call     { source, name, args }          agent calling a tool
+//   event: tool_result   { source, name, preview }       tool output, capped @120
+//   event: graph_data    { drug, graph }                 supply-chain graph payload
+//   event: message       { source, content }             final assistant answer
+//   event: done          { durationMs }
+//   event: error         { message }
 // ─────────────────────────────────────────────────────────────────────────────
+
+const PREVIEW_CHARS = 120;
 
 interface InvestigateBody {
   drug?: string;
@@ -42,68 +45,26 @@ function buildPrompt(drug: string, scenarioParams?: string): string {
   return prompt;
 }
 
-/**
- * LangGraph events we translate into domain SSE events.
- * See https://docs.langchain.com/oss/javascript/langgraph/streaming for the event taxonomy.
- */
-interface LcEvent {
-  event: string;
-  name?: string;
-  run_id?: string;
-  tags?: string[];
-  metadata?: Record<string, unknown>;
-  data?: {
-    input?: unknown;
-    output?: unknown;
-    chunk?: unknown;
-  };
+/** Identify the source agent from the stream namespace.
+ *  Empty namespace → main; "tools:<id>" → subagent invocation. */
+function sourceFromNamespace(namespace: string[]): string {
+  if (namespace.length === 0) return 'main';
+  const sub = namespace.find((s) => s.startsWith('tools:'));
+  return sub ? `sub:${sub.split(':')[1]?.slice(0, 8) ?? 'unknown'}` : 'sub';
 }
 
-function extractTokenText(chunk: unknown): string | null {
-  if (!chunk || typeof chunk !== 'object') return null;
-  // LangChain AIMessageChunk has .content which can be string or array of parts
-  const content = (chunk as { content?: unknown }).content;
-  if (typeof content === 'string') return content || null;
-  if (Array.isArray(content)) {
-    const text = content
-      .map((part) => {
-        if (typeof part === 'string') return part;
-        if (part && typeof part === 'object' && 'text' in part) return String(part.text);
-        return '';
-      })
-      .join('');
-    return text || null;
-  }
-  return null;
-}
-
-function summarizeToolOutput(output: unknown): Record<string, unknown> {
-  if (output == null) return { empty: true };
-  if (typeof output === 'string') {
+function preview(v: unknown, cap = PREVIEW_CHARS): string {
+  let s: string;
+  if (v == null) s = '';
+  else if (typeof v === 'string') s = v;
+  else {
     try {
-      return { preview: output.slice(0, 400) };
+      s = JSON.stringify(v);
     } catch {
-      return { raw: '[unserializable]' };
+      s = String(v);
     }
   }
-  if (typeof output === 'object') {
-    // Don't dump the whole graph blob to the agent transcript — already emitted as graph_data
-    const shallow: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(output as Record<string, unknown>)) {
-      if (k === 'graph') {
-        shallow[k] = '[omitted — sent as graph_data event]';
-        continue;
-      }
-      if (typeof v === 'object' && v !== null) {
-        if (Array.isArray(v)) shallow[k] = `[${v.length} items]`;
-        else shallow[k] = '[object]';
-      } else {
-        shallow[k] = v;
-      }
-    }
-    return shallow;
-  }
-  return { value: String(output) };
+  return s.length > cap ? s.slice(0, cap) + '…' : s;
 }
 
 router.post('/', async (req: Request, res: Response) => {
@@ -114,7 +75,6 @@ router.post('/', async (req: Request, res: Response) => {
     return;
   }
 
-  // Set up SSE
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Connection', 'keep-alive');
@@ -126,7 +86,7 @@ router.post('/', async (req: Request, res: Response) => {
     clientClosed = true;
   });
 
-  writeEvent(res, 'step', { phase: 'starting', drug, message: `Beginning investigation of ${drug}` });
+  writeEvent(res, 'start', { drug });
 
   let agent;
   try {
@@ -140,103 +100,102 @@ router.post('/', async (req: Request, res: Response) => {
   const prompt = buildPrompt(drug.trim(), scenarioParams?.trim());
 
   try {
-    const eventStream = agent.streamEvents(
+    const stream = await agent.stream(
       { messages: [{ role: 'user', content: prompt }] },
-      { version: 'v2', recursionLimit: 50 },
+      {
+        streamMode: ['updates', 'messages'],
+        subgraphs: true,
+        recursionLimit: 50,
+      },
     );
 
-    for await (const ev of eventStream as AsyncIterable<LcEvent>) {
+    for await (const event of stream) {
       if (clientClosed) break;
 
-      const kind = ev.event;
+      // With streamMode: [...] + subgraphs:true, each event is [namespace, mode, data]
+      const [namespace, mode, data] = event as [string[], string, unknown];
+      const source = sourceFromNamespace(namespace);
 
-      // Model token stream → forwarded to UI for live typing effect
-      if (kind === 'on_chat_model_stream') {
-        const text = extractTokenText(ev.data?.chunk);
-        if (text) writeEvent(res, 'token', { text });
-        continue;
-      }
+      if (mode === 'messages') {
+        // data is [message, metadata]
+        const [msg] = data as [unknown, unknown];
 
-      // Tool calls
-      if (kind === 'on_tool_start') {
-        writeEvent(res, 'tool_call', {
-          id: ev.run_id,
-          name: ev.name,
-          args: ev.data?.input ?? {},
-        });
-        continue;
-      }
-      if (kind === 'on_tool_end') {
-        const output = ev.data?.output;
-        writeEvent(res, 'tool_result', {
-          id: ev.run_id,
-          name: ev.name,
-          summary: summarizeToolOutput(output),
-        });
-        // Side-channel: if this was getSupplyChainGraph, also emit graph_data for the UI panel
-        if (ev.name === 'getSupplyChainGraph' && output && typeof output === 'object') {
-          // Tool results from StructuredTool with responseFormat:"content" come back as string,
-          // but our tools return objects — LangChain wraps them as ToolMessage content.
-          // Try both object and stringified JSON forms.
-          let payload: Record<string, unknown> | null = null;
-          if (typeof output === 'string') {
+        if (msg instanceof AIMessageChunk) {
+          // Tool call chunks (partial tool invocations mid-stream)
+          const tcChunks = msg.tool_call_chunks ?? [];
+          for (const tc of tcChunks) {
+            if (tc.name) {
+              let parsedArgs: unknown = tc.args;
+              try {
+                parsedArgs = typeof tc.args === 'string' ? JSON.parse(tc.args) : tc.args;
+              } catch {
+                /* keep raw */
+              }
+              writeEvent(res, 'tool_call', {
+                source,
+                name: tc.name,
+                args: parsedArgs,
+              });
+            }
+          }
+
+          // Plain assistant text content
+          const text =
+            typeof msg.content === 'string'
+              ? msg.content
+              : Array.isArray(msg.content)
+                ? msg.content
+                    .map((p) =>
+                      typeof p === 'string'
+                        ? p
+                        : p && typeof p === 'object' && 'text' in p
+                          ? String((p as { text: unknown }).text)
+                          : '',
+                    )
+                    .join('')
+                : '';
+          if (text && tcChunks.length === 0) {
+            writeEvent(res, 'token', { source, text });
+          }
+        } else if (msg instanceof ToolMessage) {
+          // Capture graph_data side-channel for getSupplyChainGraph
+          if (msg.name === 'getSupplyChainGraph') {
+            const raw = msg.content;
+            let payload: Record<string, unknown> | null = null;
             try {
-              payload = JSON.parse(output);
+              payload = typeof raw === 'string' ? JSON.parse(raw) : (raw as unknown as Record<string, unknown>);
             } catch {
               payload = null;
             }
-          } else {
-            payload = output as Record<string, unknown>;
-          }
-          const graph = payload?.graph;
-          if (graph && typeof graph === 'object') {
-            writeEvent(res, 'graph_data', {
-              drug: payload?.drug ?? drug,
-              graph,
-            });
-          }
-        }
-        continue;
-      }
-
-      // Subagent lifecycle (chain events named after subagent)
-      if (kind === 'on_chain_start' && ev.name && /^(risk_propagator|mitigation_planner|scenario_analyst)$/.test(ev.name)) {
-        writeEvent(res, 'subagent', { name: ev.name, status: 'spawned' });
-        continue;
-      }
-      if (kind === 'on_chain_end' && ev.name && /^(risk_propagator|mitigation_planner|scenario_analyst)$/.test(ev.name)) {
-        writeEvent(res, 'subagent', { name: ev.name, status: 'done' });
-        continue;
-      }
-
-      // Final AI message from the main agent (on_chain_end of the top-level graph).
-      // This carries the investigation summary the model produced.
-      if (kind === 'on_chain_end' && (ev.name === 'LangGraph' || ev.name === '__start__' || ev.name === 'agent')) {
-        const output = ev.data?.output;
-        if (output && typeof output === 'object') {
-          const messages: unknown[] = (output as { messages?: unknown[] }).messages ?? [];
-          const last = messages[messages.length - 1];
-          if (last && typeof last === 'object') {
-            const content = (last as { content?: unknown }).content;
-            if (content && typeof content === 'string' && content.trim()) {
-              writeEvent(res, 'message', { role: 'assistant', content });
+            const graph = payload?.graph;
+            if (graph && typeof graph === 'object') {
+              writeEvent(res, 'graph_data', {
+                drug: (payload as { drug?: string }).drug ?? drug,
+                graph,
+              });
             }
           }
+          writeEvent(res, 'tool_result', {
+            source,
+            name: msg.name,
+            preview: preview(msg.content),
+          });
         }
-        continue;
+      } else if (mode === 'updates') {
+        // data is { [nodeName]: nodeOutput } — the graph step that just ran
+        const updates = data as Record<string, unknown>;
+        for (const nodeName of Object.keys(updates)) {
+          writeEvent(res, 'step', { source, node: nodeName });
+        }
       }
-
-      // We leave other events (chat_model_start/end, chain_start/end for main graph) silent
-      // to avoid drowning the client. Frontend can re-derive from token/tool_call streams.
     }
 
     if (!clientClosed) {
       writeEvent(res, 'done', { durationMs: Date.now() - started });
     }
   } catch (err) {
-    const msg = (err as Error).message;
-    console.error('[investigate] Stream error:', err);
-    if (!clientClosed) writeEvent(res, 'error', { message: msg });
+    console.error('[investigate] stream error:', err);
+    if (!clientClosed) writeEvent(res, 'error', { message: (err as Error).message });
   } finally {
     if (!clientClosed) res.end();
   }
