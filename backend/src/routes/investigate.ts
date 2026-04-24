@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { AIMessageChunk, ToolMessage } from '@langchain/core/messages';
 import type { StreamEvent } from '@langchain/core/tracers/log_stream';
-import { buildFreshAgent, getInvestigationAgent } from '../services/agents';
+import { getInvestigationAgent } from '../services/agents';
 
 const router = Router();
 
@@ -87,9 +87,7 @@ router.post('/', async (req: Request, res: Response) => {
 
   let agent;
   try {
-    // Using fresh agent per request to rule out singleton state issues.
-    // Swap to getInvestigationAgent() once stable.
-    agent = getInvestigationAgent.length === 0 ? buildFreshAgent() : getInvestigationAgent();
+    agent = getInvestigationAgent();
   } catch (err) {
     clearInterval(heartbeat);
     sse(res, 'error', { message: (err as Error).message });
