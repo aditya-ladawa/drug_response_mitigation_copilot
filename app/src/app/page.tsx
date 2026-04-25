@@ -1,5 +1,5 @@
-import LoudHome from "@/components/loud-home";
+import CommandCenter from "@/components/command-center";
 
 export default function Home() {
-  return <LoudHome />;
+  return <CommandCenter />;
 }

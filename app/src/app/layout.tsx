@@ -1,12 +1,10 @@
 import type { Metadata } from "next";
-import Footer from "@/components/footer";
-import Navbar from "@/components/navbar";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PharmaSight. Drug Response Company.",
+  title: "Drug Shortage Copilot",
   description:
-    "LOUD-inspired product experience for drug shortage response and mitigation.",
+    "Command-center UI for investigating drug shortages with a globe, graph, and agent stream.",
 };
 
 export default function RootLayout({
@@ -18,9 +16,7 @@ export default function RootLayout({
     <html lang="en">
       <body className="antialiased">
         <div className="relative min-h-screen overflow-x-clip bg-black text-white">
-          <Navbar />
           {children}
-          <Footer />
         </div>
       </body>
     </html>
