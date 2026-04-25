@@ -1,14 +1,43 @@
-# Python-generated files
+# Python
 __pycache__/
 *.py[oc]
-build/
-dist/
 wheels/
 *.egg-info
+.venv/
 
-# Virtual environments
-.venv
+# Node / TypeScript
+node_modules/
+.next/
+.turbo/
+dist/
+*.tsbuildinfo
 
+# Artifacts & databases
+data_access/artifacts/
+backend/artifacts/
+backend/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Playwright
+playwright-report/
+test-results/
+.playwright/
+
+# Logs
+*.log
+/tmp/
+
+# Environment
 .env
+.env.local
+.env.production
+.env.*.local
 
-
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
