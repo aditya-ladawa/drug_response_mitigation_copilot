@@ -37,16 +37,23 @@ type GlobeProps = {
   width: number;
   height: number;
   backgroundColor: string;
+  backgroundImageUrl?: string;
   globeImageUrl: string;
   bumpImageUrl?: string;
+  showAtmosphere?: boolean;
   atmosphereColor: string;
   atmosphereAltitude: number;
+  globeCurvatureResolution?: number;
+  waitForGlobeReady?: boolean;
+  animateIn?: boolean;
   pointsData: GlobePoint[];
   pointLat: string;
   pointLng: string;
   pointColor: (point: GlobePoint) => string;
   pointAltitude: (point: GlobePoint) => number;
   pointRadius: (point: GlobePoint) => number;
+  pointResolution?: number;
+  pointsTransitionDuration?: number;
   pointLabel: (point: GlobePoint) => string;
   arcsData: SupplyArc[];
   arcStartLat: string;
@@ -54,6 +61,9 @@ type GlobeProps = {
   arcEndLat: string;
   arcEndLng: string;
   arcColor: (arc: SupplyArc) => string[];
+  arcAltitudeAutoScale?: number;
+  arcCurveResolution?: number;
+  arcCircularResolution?: number;
   arcDashLength: number;
   arcDashGap: number;
   arcDashAnimateTime: number;
@@ -100,25 +110,9 @@ const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
   ssr: false,
 }) as unknown as ComponentType<ForceGraphProps>;
 
-const earthTexture =
-  "data:image/svg+xml;charset=utf-8," +
-  encodeURIComponent(`
-    <svg xmlns="http://www.w3.org/2000/svg" width="2048" height="1024" viewBox="0 0 2048 1024">
-      <defs>
-        <linearGradient id="g" x1="0" x2="1">
-          <stop stop-color="#041014"/><stop offset=".5" stop-color="#0b1d25"/><stop offset="1" stop-color="#03080c"/>
-        </linearGradient>
-        <pattern id="p" width="128" height="128" patternUnits="userSpaceOnUse">
-          <path d="M0 64H128M64 0V128" stroke="#2dd4bf" stroke-opacity=".16" stroke-width="2"/>
-        </pattern>
-      </defs>
-      <rect width="2048" height="1024" fill="url(#g)"/>
-      <rect width="2048" height="1024" fill="url(#p)"/>
-      <path d="M236 312c94-92 244-92 362-18 60 38 134 48 198 20l108-46c82-34 176-8 229 63l55 74c46 62 124 92 200 76l148-31c116-24 238 28 300 129l44 71c-118 54-278 92-460 106-363 27-826-72-1184-226-82-35-96-150-30-218Z" fill="#e5f7ef" fill-opacity=".16"/>
-      <path d="M1284 214c124-40 302-8 426 72 84 54 124 136 92 190-34 58-146 70-268 24-112-42-178-112-256-120-102-10-168-70-146-116 12-24 58-40 152-50Z" fill="#ffffff" fill-opacity=".13"/>
-      <path d="M684 694c112-56 292-64 448-20 138 38 214 118 172 180-38 56-172 78-322 54-154-24-350-80-402-132-24-24 0-54 104-82Z" fill="#ffffff" fill-opacity=".12"/>
-    </svg>
-  `);
+const globeImageUrl = "https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg";
+const globeBumpUrl = "https://unpkg.com/three-globe/example/img/earth-topology.png";
+const globeStarsUrl = "https://unpkg.com/three-globe/example/img/night-sky.png";
 
 const fallbackGraph: CopilotGraph = {
   drug: "Amoxicillin",
@@ -307,7 +301,7 @@ export default function CommandCenter() {
     <main className="command-shell relative min-h-screen overflow-hidden bg-[#030508] text-white">
       <ReactBitsAurora />
 
-      <section className="relative z-10 flex min-h-screen flex-col gap-4 p-3 sm:p-4 lg:p-5">
+      <section className="command-stage">
         <header className="command-topbar">
           <div className="min-w-0">
             <div className="flex items-center gap-3">
@@ -334,7 +328,7 @@ export default function CommandCenter() {
 
         <section className="command-search-panel">
           <div>
-            <p className="mb-2 flex items-center gap-2 text-sm font-medium text-white/80">
+            <p className="mb-2 flex items-center gap-2 text-sm font-medium text-white/80 lg:mb-1">
               <Sparkles className="h-4 w-4 text-cyan-200" />
               Investigate a drug shortage:
             </p>
@@ -345,13 +339,13 @@ export default function CommandCenter() {
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="e.g. Amoxicillin, Adderall, Vincristine"
-                  className="h-12 w-full rounded-md border border-white/14 bg-white/[0.055] pl-11 pr-4 text-sm text-white outline-none transition focus:border-cyan-300/70"
+                  className="h-12 w-full rounded-md border border-white/14 bg-white/[0.055] pl-11 pr-4 text-sm text-white outline-none transition focus:border-cyan-300/70 lg:h-11"
                 />
               </label>
               <button
                 type="submit"
                 disabled={isInvestigating}
-                className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-white px-5 text-sm font-semibold text-black transition hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-white px-5 text-sm font-semibold text-black transition hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-60 lg:h-11"
               >
                 {isInvestigating ? "Running" : "Go"}
                 <ArrowRight className="h-4 w-4" />
@@ -367,8 +361,8 @@ export default function CommandCenter() {
           </div>
         </section>
 
-        <section className="grid flex-1 gap-4 lg:grid-cols-[1fr_1fr]">
-          <article className="command-panel min-h-[360px] lg:min-h-0">
+        <section className="command-main-grid">
+          <article className="command-panel globe-panel">
             <div className="panel-title">
               <span>
                 <Activity className="h-4 w-4 text-cyan-200" />
@@ -376,22 +370,32 @@ export default function CommandCenter() {
               </span>
               <span>{activePoint?.name ?? "Waiting for plant signal"}</span>
             </div>
-            <div ref={setGlobeElement} className="relative min-h-[300px] flex-1 overflow-hidden rounded-md sm:min-h-[360px]">
+            <div ref={setGlobeElement} className="globe-viewport">
+              <div className="globe-reflection" aria-hidden="true" />
+              <div className="globe-scanline" aria-hidden="true" />
               {globeSize.width > 0 ? (
                 <Globe
                   ref={globeRef}
                   width={globeSize.width}
                   height={globeSize.height}
                   backgroundColor="rgba(0,0,0,0)"
-                  globeImageUrl={earthTexture}
-                  atmosphereColor="#67e8f9"
-                  atmosphereAltitude={0.18}
+                  backgroundImageUrl={globeStarsUrl}
+                  globeImageUrl={globeImageUrl}
+                  bumpImageUrl={globeBumpUrl}
+                  showAtmosphere
+                  atmosphereColor="#f8fafc"
+                  atmosphereAltitude={0.12}
+                  globeCurvatureResolution={3}
+                  waitForGlobeReady
+                  animateIn
                   pointsData={points}
                   pointLat="lat"
                   pointLng="lng"
                   pointColor={(point) => (point.risk === "high" ? "#fb7185" : "#67e8f9")}
                   pointAltitude={(point) => (point.risk === "high" ? 0.12 : 0.06)}
                   pointRadius={(point) => (point.risk === "high" ? 0.42 : 0.26)}
+                  pointResolution={18}
+                  pointsTransitionDuration={900}
                   pointLabel={(point) => `${point.name}<br/>${point.description ?? "Manufacturing signal"}`}
                   arcsData={arcs}
                   arcStartLat="startLat"
@@ -399,6 +403,9 @@ export default function CommandCenter() {
                   arcEndLat="endLat"
                   arcEndLng="endLng"
                   arcColor={(arc) => arc.color}
+                  arcAltitudeAutoScale={0.42}
+                  arcCurveResolution={96}
+                  arcCircularResolution={8}
                   arcDashLength={0.42}
                   arcDashGap={1.4}
                   arcDashAnimateTime={1800}
@@ -415,7 +422,7 @@ export default function CommandCenter() {
             </div>
           </article>
 
-          <div className="grid min-h-[680px] min-w-0 gap-4 lg:min-h-0 lg:grid-rows-[1fr_0.82fr]">
+          <div className="command-side-grid">
             <article className="command-panel">
               <div className="panel-title">
                 <span>
@@ -424,7 +431,7 @@ export default function CommandCenter() {
                 </span>
                 <span>{graph.nodes.length} nodes / {graph.links.length} links</span>
               </div>
-              <div ref={setGraphElement} className="relative min-h-[300px] flex-1 overflow-hidden rounded-md sm:min-h-[330px]">
+              <div ref={setGraphElement} className="graph-viewport">
                 {graphSize.width > 0 ? (
                   <ForceGraph2D
                     width={graphSize.width}
@@ -458,10 +465,10 @@ export default function CommandCenter() {
                       ctx.shadowBlur = 0;
 
                       const label = node.name;
-                      const fontSize = Math.max(7, 11 / globalScale);
+                      const fontSize = Math.max(5.5, 9 / globalScale);
                       ctx.font = `${fontSize}px Inter, Segoe UI, sans-serif`;
                       ctx.textAlign = "center";
-                      ctx.fillStyle = "rgba(255,255,255,0.82)";
+                      ctx.fillStyle = "rgba(255,255,255,0.72)";
                       ctx.fillText(label, x, y + radius + fontSize + 3);
                     }}
                   />
@@ -477,7 +484,7 @@ export default function CommandCenter() {
                 </span>
                 <span>{isInvestigating ? "streaming" : "idle"}</span>
               </div>
-              <div className="flex-1 space-y-3 overflow-auto pr-1">
+              <div className="agent-stream flex-1 space-y-3 overflow-auto pr-1">
                 <div className="rounded-md border border-white/10 bg-white/[0.035] p-4 text-sm leading-6 text-white/68">
                   <span className="font-semibold text-white">Agent:</span> {graph.summary}
                 </div>
