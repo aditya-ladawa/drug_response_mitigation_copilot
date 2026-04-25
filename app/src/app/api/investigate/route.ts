@@ -24,6 +24,10 @@ export async function POST(request: NextRequest) {
             tool: "finalizeBrief",
             message: "Investigation brief assembled. Panels are synchronized with the latest evidence graph.",
             status: "complete",
+            timestamp: new Date().toISOString(),
+            confidence: 0.81,
+            source: "Synchronized evidence graph",
+            durationMs: 410,
           })}\n\n`,
         ),
       );

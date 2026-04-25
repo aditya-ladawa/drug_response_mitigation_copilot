@@ -20,6 +20,8 @@ export function getMockGraph(name: string): CopilotGraph {
   const seed = drug.toLowerCase();
   const isAdderall = seed.includes("adderall");
   const isVincristine = seed.includes("vincristine");
+  const affectedSupply = isAdderall ? 54 : isVincristine ? 72 : 68;
+  const confidence = isVincristine ? 0.86 : isAdderall ? 0.78 : 0.82;
 
   const manufacturer = isAdderall
     ? "Northstar Generics"
@@ -43,6 +45,20 @@ export function getMockGraph(name: string): CopilotGraph {
     drug,
     summary:
       "Signals point to a concentrated manufacturing dependency with a quality event at the primary site and limited near-term substitute capacity.",
+    metrics: {
+      riskLevel: affectedSupply > 65 ? "high" : "medium",
+      riskScore: affectedSupply > 65 ? 86 : 74,
+      affectedSupply,
+      confidence,
+      primaryPlant: problemPlant,
+      eta: isVincristine ? "10-14 days" : isAdderall ? "14-21 days" : "7-10 days",
+      substitutes: isVincristine ? 2 : isAdderall ? 4 : 5,
+    },
+    recommendations: [
+      "Prioritize conservation protocol for high-dependency accounts.",
+      "Contact alternate suppliers with available therapeutic substitutes.",
+      "Monitor FDA shortage updates and manufacturer remediation signals daily.",
+    ],
     nodes: [
       {
         id: "drug",
@@ -51,6 +67,12 @@ export function getMockGraph(name: string): CopilotGraph {
         val: 8,
         color: graphTheme.drug,
         description: "Queried shortage product",
+        impact: "Central product under investigation.",
+        confidence,
+        evidence: [
+          "Matched the query to shortage and manufacturer graph entities.",
+          "Linked active ingredient and supply-chain dependencies at depth 2.",
+        ],
       },
       {
         id: "shortage",
@@ -58,6 +80,12 @@ export function getMockGraph(name: string): CopilotGraph {
         type: "shortage",
         val: 5,
         color: graphTheme.shortage,
+        impact: "Regulatory shortage signal is active.",
+        confidence: 0.84,
+        evidence: [
+          "Public shortage listing indicates supply pressure.",
+          "Status aligns with current modeled operational impact.",
+        ],
       },
       {
         id: "mfr-primary",
@@ -65,6 +93,13 @@ export function getMockGraph(name: string): CopilotGraph {
         type: "manufacturer",
         val: 6,
         color: graphTheme.manufacturer,
+        owner: "Entity Resolver",
+        impact: "Primary resolved manufacturer for the queried product.",
+        confidence: 0.8,
+        evidence: [
+          "Manufacturer aliases resolved across labeler and facility references.",
+          "Connected to the implicated production site in the graph.",
+        ],
       },
       {
         id: "plant-problem",
@@ -76,6 +111,14 @@ export function getMockGraph(name: string): CopilotGraph {
         lng: isAdderall ? -112.074 : -84.512,
         risk: "high",
         description: "Primary implicated plant. Estimated 68% supply dependency.",
+        owner: "Investigator",
+        impact: `${affectedSupply}% modeled supply dependency; highest root-cause priority.`,
+        confidence,
+        evidence: [
+          "Quality signal overlaps with the primary manufacturing dependency.",
+          "Limited substitute capacity increases mitigation urgency.",
+          "Adjacent line signal suggests shared operational exposure.",
+        ],
       },
       {
         id: "plant-upstream",
@@ -87,6 +130,13 @@ export function getMockGraph(name: string): CopilotGraph {
         lng: isVincristine ? 7.5886 : 72.8777,
         risk: "medium",
         description: "Upstream input or API dependency.",
+        owner: "Risk Propagator",
+        impact: "Upstream dependency could slow recovery if primary remediation succeeds.",
+        confidence: 0.71,
+        evidence: [
+          "API dependency is connected to the primary production site.",
+          "Secondary risk remains medium because alternate input routing is possible.",
+        ],
       },
       {
         id: "warning-letter",
@@ -94,6 +144,13 @@ export function getMockGraph(name: string): CopilotGraph {
         type: "warning",
         val: 5,
         color: graphTheme.warning,
+        owner: "Regulatory Monitor",
+        impact: "Strong quality signal connected to the implicated plant.",
+        confidence: 0.88,
+        evidence: [
+          "CGMP issue increases likelihood of production interruption.",
+          "Signal is directly linked to the highest-risk plant node.",
+        ],
       },
       {
         id: "recall",
@@ -101,6 +158,13 @@ export function getMockGraph(name: string): CopilotGraph {
         type: "recall",
         val: 4,
         color: graphTheme.recall,
+        owner: "Recall Monitor",
+        impact: "Related recall may indicate shared process or quality exposure.",
+        confidence: 0.66,
+        evidence: [
+          "Recall is not definitive root cause, but raises adjacent-line risk.",
+          "Weighted lower than the direct CGMP signal.",
+        ],
       },
       {
         id: "ingredient",
@@ -108,6 +172,12 @@ export function getMockGraph(name: string): CopilotGraph {
         type: "ingredient",
         val: 4,
         color: graphTheme.ingredient,
+        impact: "Active ingredient dependency used for substitute and sourcing analysis.",
+        confidence: 0.76,
+        evidence: [
+          "Ingredient connects upstream API and finished-dose production.",
+          "Substitute planning depends on this node and therapeutic class.",
+        ],
       },
     ],
     links: [
@@ -124,6 +194,9 @@ export function getMockGraph(name: string): CopilotGraph {
 }
 
 export function getAgentEvents(drug: string): AgentEvent[] {
+  const base = Date.now();
+  const stamp = (offsetSeconds: number) => new Date(base + offsetSeconds * 1000).toISOString();
+
   return [
     {
       id: "evt-1",
@@ -131,6 +204,10 @@ export function getAgentEvents(drug: string): AgentEvent[] {
       tool: "searchShortages",
       message: `Matched ${drug} against FDA and ASHP shortage records. Current status suggests active operational pressure.`,
       status: "complete",
+      timestamp: stamp(1),
+      confidence: 0.84,
+      source: "FDA/ASHP shortage records",
+      durationMs: 680,
     },
     {
       id: "evt-2",
@@ -138,6 +215,10 @@ export function getAgentEvents(drug: string): AgentEvent[] {
       tool: "getManufacturerProfile",
       message: "Resolved manufacturer, labeler, and implicated facility aliases across public records.",
       status: "complete",
+      timestamp: stamp(2),
+      confidence: 0.8,
+      source: "Manufacturer profile index",
+      durationMs: 920,
     },
     {
       id: "evt-3",
@@ -146,6 +227,10 @@ export function getAgentEvents(drug: string): AgentEvent[] {
       message:
         "Root cause: likely CGMP violation at the primary plant. Dependency estimate: 68% of modeled supply.",
       status: "warning",
+      timestamp: stamp(3),
+      confidence: 0.82,
+      source: "Quality and dependency model",
+      durationMs: 1240,
     },
     {
       id: "evt-4",
@@ -153,6 +238,10 @@ export function getAgentEvents(drug: string): AgentEvent[] {
       tool: "expandExposureGraph",
       message: "Added upstream API dependency and adjacent recall signal. Knowledge graph depth is now 2.",
       status: "complete",
+      timestamp: stamp(4),
+      confidence: 0.74,
+      source: "Supply-chain graph",
+      durationMs: 760,
     },
     {
       id: "evt-5",
@@ -161,6 +250,10 @@ export function getAgentEvents(drug: string): AgentEvent[] {
       message:
         "Next action: start pharmacy conservation protocol, review substitutions, and diversify sourcing within 7 days.",
       status: "complete",
+      timestamp: stamp(5),
+      confidence: 0.79,
+      source: "Mitigation playbook",
+      durationMs: 540,
     },
   ];
 }

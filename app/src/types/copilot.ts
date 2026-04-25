@@ -19,11 +19,15 @@ export type CopilotNode = {
   y?: number;
   risk?: "low" | "medium" | "high";
   description?: string;
+  evidence?: string[];
+  impact?: string;
+  owner?: string;
+  confidence?: number;
 };
 
 export type CopilotLink = {
-  source: string;
-  target: string;
+  source: string | CopilotNode;
+  target: string | CopilotNode;
   label?: string;
   strength?: number;
   color?: string;
@@ -32,6 +36,16 @@ export type CopilotLink = {
 export type CopilotGraph = {
   drug: string;
   summary: string;
+  metrics: {
+    riskLevel: "low" | "medium" | "high";
+    riskScore: number;
+    affectedSupply: number;
+    confidence: number;
+    primaryPlant: string;
+    eta: string;
+    substitutes: number;
+  };
+  recommendations: string[];
   nodes: CopilotNode[];
   links: CopilotLink[];
 };
@@ -56,4 +70,8 @@ export type AgentEvent = {
   tool: string;
   message: string;
   status: "queued" | "running" | "complete" | "warning";
+  timestamp: string;
+  confidence?: number;
+  source?: string;
+  durationMs?: number;
 };
