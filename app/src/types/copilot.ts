@@ -2,8 +2,10 @@ export type GraphNodeType =
   | "drug"
   | "manufacturer"
   | "plant"
+  | "ndc"
   | "recall"
   | "warning"
+  | "import_alert"
   | "shortage"
   | "ingredient";
 

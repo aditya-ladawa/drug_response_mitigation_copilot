@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -133,7 +134,10 @@ export async function fetchBytesViaProxy(
 ): Promise<[Buffer, string]> {
   const headers = { ...DEFAULT_HEADERS, ...extraHeaders };
   const originalMax = process.getMaxListeners();
-  process.setMaxListeners(proxies.length + 10);
+  const originalDefaultMax = EventEmitter.defaultMaxListeners;
+  const proxyListenerLimit = Math.max(originalMax, originalDefaultMax, proxies.length + 20);
+  process.setMaxListeners(proxyListenerLimit);
+  EventEmitter.defaultMaxListeners = proxyListenerLimit;
 
   try {
     for (const proxy of proxies) {
@@ -155,6 +159,7 @@ export async function fetchBytesViaProxy(
     }
   } finally {
     process.setMaxListeners(originalMax);
+    EventEmitter.defaultMaxListeners = originalDefaultMax;
   }
 
   throw new Error('All proxies failed for ' + url);

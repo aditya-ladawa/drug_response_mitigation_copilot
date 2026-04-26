@@ -293,6 +293,11 @@ a {
   box-shadow: 0 0 14px rgba(52, 211, 153, 0.85);
 }
 
+.status-dot-offline {
+  background: #fb7185;
+  box-shadow: 0 0 14px rgba(251, 113, 133, 0.75);
+}
+
 .command-search-panel {
   display: grid;
   gap: 0.35rem;
@@ -1150,20 +1155,38 @@ a {
   }
 
   .summary-strip {
-    display: flex;
-    grid-template-columns: none;
-    overflow-x: auto;
-    padding-bottom: 0.15rem;
-    scrollbar-width: none;
-  }
-
-  .summary-strip::-webkit-scrollbar {
-    display: none;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.22rem;
+    overflow: hidden;
+    padding-bottom: 0;
   }
 
   .summary-card {
-    flex: 0 0 96px;
-    height: 34px;
+    height: 32px;
+    grid-template-columns: 11px minmax(0, 1fr);
+    gap: 0.18rem;
+    padding: 0.16rem 0.18rem;
+  }
+
+  .summary-icon {
+    width: 11px;
+    height: 11px;
+    border-radius: 3px;
+  }
+
+  .summary-icon svg {
+    width: 6px;
+    height: 6px;
+  }
+
+  .summary-card p,
+  .summary-card span {
+    font-size: 0.36rem;
+  }
+
+  .summary-card strong {
+    font-size: 0.53rem;
   }
 
   .resize-handle {

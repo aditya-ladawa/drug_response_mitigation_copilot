@@ -24,6 +24,15 @@ import {
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentType, CSSProperties, PointerEvent as ReactPointerEvent, Ref } from "react";
 import ReactBitsAurora from "@/components/react-bits-aurora";
+import {
+  adaptBackendGraph,
+  agentEventFromSse,
+  apiUrl,
+  getDrugGraph,
+  getHealth,
+  getRefreshStatus,
+} from "@/lib/backend-api";
+import type { BackendGraph, RefreshStatus } from "@/lib/backend-api";
 import type {
   AgentEvent,
   CopilotGraph,
@@ -237,9 +246,9 @@ function nodeMatchesFilter(node: CopilotNode, filter: GraphFilter) {
   if (filter === "plant") return node.type === "plant";
   if (filter === "manufacturer") return node.type === "manufacturer";
   if (filter === "regulatory") {
-    return ["shortage", "warning", "recall"].includes(node.type);
+    return ["shortage", "warning", "recall", "import_alert"].includes(node.type);
   }
-  return ["drug", "ingredient", "manufacturer", "plant"].includes(node.type);
+  return ["drug", "ingredient", "manufacturer", "plant", "ndc"].includes(node.type);
 }
 
 function linkEndpointId(endpoint: CopilotLink["source"] | CopilotLink["target"]) {
@@ -265,6 +274,8 @@ export default function CommandCenter() {
   const [globeView, setGlobeView] = useState<GlobeViewMode>("3d");
   const [mainSplit, setMainSplit] = useState(50);
   const [rightSplit, setRightSplit] = useState(48);
+  const [backendStatus, setBackendStatus] = useState<"checking" | "live" | "offline">("checking");
+  const [refreshStatus, setRefreshStatus] = useState<RefreshStatus | null>(null);
   const globeRef = useRef<GlobeMethods | null>(null);
   const mainGridRef = useRef<HTMLElement | null>(null);
   const sideGridRef = useRef<HTMLDivElement | null>(null);
@@ -345,9 +356,7 @@ export default function CommandCenter() {
   }, [activePoint, globeView]);
 
   const loadGraph = useCallback(async (drug: string) => {
-    const response = await fetch(`/api/graph/drug/${encodeURIComponent(drug)}?depth=2`);
-    if (!response.ok) throw new Error("Graph request failed");
-    const nextGraph = (await response.json()) as CopilotGraph;
+    const nextGraph = await getDrugGraph(drug);
     setGraph(nextGraph);
     setSelectedNodeId(
       nextGraph.nodes.find((node) => node.type === "plant" && node.risk === "high")?.id ??
@@ -357,12 +366,13 @@ export default function CommandCenter() {
   }, []);
 
   const streamInvestigation = useCallback(async (drug: string) => {
-    const response = await fetch("/api/investigate", {
+    const response = await fetch(apiUrl("/api/investigate"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ drug }),
     });
 
+    if (!response.ok) throw new Error(`Investigation request failed with ${response.status}`);
     if (!response.body) return;
 
     const reader = response.body.getReader();
@@ -378,13 +388,24 @@ export default function CommandCenter() {
       buffer = chunks.pop() ?? "";
 
       for (const chunk of chunks) {
-        const dataLine = chunk
-          .split("\n")
-          .find((line) => line.startsWith("data: "));
+        const lines = chunk.split("\n");
+        const eventName = lines.find((line) => line.startsWith("event:"))?.replace("event:", "").trim() ?? "message";
+        const dataLine = lines.find((line) => line.startsWith("data:"));
         if (!dataLine) continue;
 
-        const event = JSON.parse(dataLine.replace("data: ", "")) as AgentEvent;
-        setEvents((current) => [event, ...current].slice(0, 8));
+        const payload = JSON.parse(dataLine.replace(/^data:\s?/, "")) as Record<string, unknown>;
+        if (eventName === "graph_data" && payload.graph) {
+          const nextGraph = adaptBackendGraph(payload.graph as BackendGraph, String(payload.drug ?? drug));
+          setGraph(nextGraph);
+          setSelectedNodeId(
+            nextGraph.nodes.find((node) => node.type === "plant" && node.risk === "high")?.id ??
+              nextGraph.nodes[0]?.id ??
+              null,
+          );
+        }
+
+        const event = agentEventFromSse(eventName, payload, drug);
+        if (event) setEvents((current) => [event, ...current].slice(0, 8));
       }
     }
   }, []);
@@ -408,6 +429,18 @@ export default function CommandCenter() {
     try {
       await loadGraph(drug);
       await streamInvestigation(drug);
+    } catch (error) {
+      const errorEvent: AgentEvent = {
+          id: `backend-error-${Date.now()}`,
+          agent: "Backend",
+          tool: "fetch",
+          message: (error as Error).message,
+          status: "warning",
+          timestamp: new Date().toISOString(),
+          confidence: 0.2,
+          source: "Express backend",
+      };
+      setEvents((current) => [errorEvent, ...current].slice(0, 8));
     } finally {
       setIsInvestigating(false);
     }
@@ -483,6 +516,30 @@ export default function CommandCenter() {
     }
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function syncBackendStatus() {
+      try {
+        await getHealth();
+        const status = await getRefreshStatus();
+        if (!cancelled) {
+          setBackendStatus("live");
+          setRefreshStatus(status);
+        }
+      } catch {
+        if (!cancelled) setBackendStatus("offline");
+      }
+    }
+
+    void syncBackendStatus();
+    const timer = window.setInterval(syncBackendStatus, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   return (
     <main className="command-shell relative min-h-screen overflow-hidden bg-[#030508] text-white">
       <ReactBitsAurora />
@@ -501,8 +558,16 @@ export default function CommandCenter() {
           </div>
 
           <div className="flex min-w-0 shrink-0 items-center gap-2 text-[11px] text-white/52">
-            <span className="status-dot" />
-            <span>Graph live</span>
+            <span className={backendStatus === "live" ? "status-dot" : "status-dot status-dot-offline"} />
+            <span>
+              {backendStatus === "live"
+                ? refreshStatus?.running
+                  ? "Backend refreshing"
+                  : "Backend live"
+                : backendStatus === "offline"
+                  ? "Backend offline"
+                  : "Checking backend"}
+            </span>
           </div>
         </header>
 

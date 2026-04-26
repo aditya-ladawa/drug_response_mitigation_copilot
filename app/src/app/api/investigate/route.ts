@@ -1,45 +1,20 @@
 import { NextRequest } from "next/server";
-import { getAgentEvents } from "@/lib/mock-graph";
+import { API_BASE_URL } from "@/lib/backend-api";
 
 export async function POST(request: NextRequest) {
-  const body = (await request.json().catch(() => ({}))) as { drug?: string };
-  const drug = body.drug?.trim() || "Amoxicillin";
-  const encoder = new TextEncoder();
-  const events = getAgentEvents(drug);
-
-  const stream = new ReadableStream({
-    async start(controller) {
-      for (const event of events) {
-        controller.enqueue(
-          encoder.encode(`event: step\ndata: ${JSON.stringify(event)}\n\n`),
-        );
-        await new Promise((resolve) => setTimeout(resolve, 520));
-      }
-
-      controller.enqueue(
-        encoder.encode(
-          `event: done\ndata: ${JSON.stringify({
-            id: "done",
-            agent: "Orchestrator",
-            tool: "finalizeBrief",
-            message: "Investigation brief assembled. Panels are synchronized with the latest evidence graph.",
-            status: "complete",
-            timestamp: new Date().toISOString(),
-            confidence: 0.81,
-            source: "Synchronized evidence graph",
-            durationMs: 410,
-          })}\n\n`,
-        ),
-      );
-      controller.close();
-    },
+  const upstream = await fetch(`${API_BASE_URL}/api/investigate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: await request.text(),
+    cache: "no-store",
   });
 
-  return new Response(stream, {
+  return new Response(upstream.body, {
+    status: upstream.status,
     headers: {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
-      "Content-Type": "text/event-stream; charset=utf-8",
+      "Content-Type": upstream.headers.get("Content-Type") ?? "text/event-stream; charset=utf-8",
     },
   });
 }

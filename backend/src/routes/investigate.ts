@@ -1,6 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { AIMessageChunk } from '@langchain/core/messages';
+import { like, sql } from 'drizzle-orm';
+import { db } from '../db';
+import { shortageRecords } from '../db/schema';
 import { getInvestigationAgent } from '../services/agents';
+import { findDrugByName, getSupplyChainGraph, serialize } from '../services/graph';
 
 const router = Router();
 
@@ -36,6 +40,50 @@ function buildPrompt(drug: string, scenarioParams?: string): string {
   return p;
 }
 
+function writeSse(res: Response, event: string, data: unknown): void {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function streamLocalInvestigation(res: Response, drug: string, started: number): Promise<void> {
+  const cleanDrug = drug.trim();
+  const pattern = `%${cleanDrug.toLowerCase().replace(/%/g, '')}%`;
+  const shortages = db
+    .select()
+    .from(shortageRecords)
+    .where(like(sql`LOWER(${shortageRecords.drugName})`, pattern))
+    .limit(8)
+    .all();
+
+  writeSse(res, 'tool_call', { name: 'searchShortages', args: { drugName: cleanDrug } });
+  await wait(180);
+  writeSse(res, 'tool_result', {
+    name: 'searchShortages',
+    preview:
+      shortages.length > 0
+        ? `Found ${shortages.length} shortage record(s), including ${shortages[0].drugName}.`
+        : `No exact shortage rows found for ${cleanDrug}; using graph context where available.`,
+  });
+
+  const drugNode = findDrugByName(cleanDrug);
+  if (drugNode) {
+    const dbId = parseInt(drugNode.id.split(':')[1], 10);
+    const graph = serialize(getSupplyChainGraph(dbId, 3));
+    await wait(180);
+    writeSse(res, 'graph_data', { drug: drugNode.label ?? cleanDrug, graph });
+  }
+
+  await wait(180);
+  writeSse(res, 'subagent', { name: 'risk_propagator', status: 'done' });
+  await wait(180);
+  writeSse(res, 'subagent', { name: 'mitigation_planner', status: 'done' });
+  await wait(180);
+  writeSse(res, 'done', { durationMs: Date.now() - started, mode: 'local-fallback' });
+}
+
 router.post('/', async (req: Request, res: Response) => {
   const { drug, scenarioParams } = (req.body ?? {}) as InvestigateBody;
 
@@ -52,7 +100,17 @@ router.post('/', async (req: Request, res: Response) => {
   try { (res.socket as unknown as { setNoDelay?: (b: boolean) => void } | null)?.setNoDelay?.(true); } catch { /* noop */ }
 
   const started = Date.now();
-  res.write(`event: start\ndata: ${JSON.stringify({ drug })}\n\n`);
+  writeSse(res, 'start', { drug });
+
+  if (!process.env.OPENROUTER_API_KEY) {
+    try {
+      await streamLocalInvestigation(res, drug, started);
+    } catch (err) {
+      writeSse(res, 'error', { message: (err as Error).message });
+    }
+    res.end();
+    return;
+  }
 
   try {
     const agent = getInvestigationAgent();
@@ -72,19 +130,19 @@ router.post('/', async (req: Request, res: Response) => {
             if (tc.name) {
               let args: unknown = tc.args;
               try { args = typeof tc.args === 'string' ? JSON.parse(tc.args) : tc.args; } catch { /* raw */ }
-              res.write(`event: tool_call\ndata: ${JSON.stringify({ name: tc.name, args })}\n\n`);
+              writeSse(res, 'tool_call', { name: tc.name, args });
             }
           }
           if (!tcc.length) {
             const text = typeof chunk.content === 'string' ? chunk.content : '';
-            if (text) res.write(`event: token\ndata: ${JSON.stringify({ text })}\n\n`);
+            if (text) writeSse(res, 'token', { text });
           }
         }
         continue;
       }
 
       if (kind === 'on_tool_start') {
-        res.write(`event: tool_call\ndata: ${JSON.stringify({ name: ev.name, args: ev.data?.input ?? {} })}\n\n`);
+        writeSse(res, 'tool_call', { name: ev.name, args: ev.data?.input ?? {} });
         continue;
       }
 
@@ -96,26 +154,26 @@ router.post('/', async (req: Request, res: Response) => {
           try { payload = typeof output === 'string' ? JSON.parse(output as string) : (output as Record<string, unknown>); } catch { payload = null; }
           const graph = payload?.graph;
           if (graph && typeof graph === 'object') {
-            res.write(`event: graph_data\ndata: ${JSON.stringify({ drug: (payload as { drug?: string }).drug ?? drug, graph })}\n\n`);
+            writeSse(res, 'graph_data', { drug: (payload as { drug?: string }).drug ?? drug, graph });
           }
         }
-        res.write(`event: tool_result\ndata: ${JSON.stringify({ name: ev.name, preview: cap(output, TOOL_PREVIEW) })}\n\n`);
+        writeSse(res, 'tool_result', { name: ev.name, preview: cap(output, TOOL_PREVIEW) });
         continue;
       }
 
       if (kind === 'on_chain_end' && typeof ev.name === 'string' && /^(risk_propagator|mitigation_planner|scenario_analyst)$/.test(ev.name)) {
-        res.write(`event: subagent\ndata: ${JSON.stringify({ name: ev.name, status: 'done' })}\n\n`);
+        writeSse(res, 'subagent', { name: ev.name, status: 'done' });
         continue;
       }
       if (kind === 'on_chain_start' && typeof ev.name === 'string' && /^(risk_propagator|mitigation_planner|scenario_analyst)$/.test(ev.name)) {
-        res.write(`event: subagent\ndata: ${JSON.stringify({ name: ev.name, status: 'started' })}\n\n`);
+        writeSse(res, 'subagent', { name: ev.name, status: 'started' });
         continue;
       }
     }
 
-    res.write(`event: done\ndata: ${JSON.stringify({ durationMs: Date.now() - started })}\n\n`);
+    writeSse(res, 'done', { durationMs: Date.now() - started });
   } catch (err) {
-    res.write(`event: error\ndata: ${JSON.stringify({ message: (err as Error).message })}\n\n`);
+    writeSse(res, 'error', { message: (err as Error).message });
   }
   res.end();
 });
